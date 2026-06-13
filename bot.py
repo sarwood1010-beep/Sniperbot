@@ -48,6 +48,16 @@ def record_raw_ws(raw):
     RAW_WS_LOG.append((time.time(),raw[:2000]))
     while len(RAW_WS_LOG)>RAW_WS_LOG_MAX:RAW_WS_LOG.pop(0)
 
+# v16.9 decision log; v16.14 RESTORED (deleted in v16.13.1 by issue-size trimming,
+# which crashed /reconcile and silently broke every FIRE decision).
+DECISION_LOG=[]
+DECISION_LOG_MAX=500
+
+def log_decision(slug,side,price,drop,outcome):
+    DECISION_LOG.append({"ts":time.time(),"slug":slug,"side":side,
+        "price":price,"drop":drop,"outcome":outcome})
+    while len(DECISION_LOG)>DECISION_LOG_MAX:DECISION_LOG.pop(0)
+
 # v16.13: per-slug cooldown breaks open->close->refire churn loop.
 LAST_TRADE_AT={}                 # {slug: ts of last trade}
 
@@ -696,7 +706,10 @@ async def on_market_tick(slug,payload):
                     tag=reason or f"below threshold ({effective_drop:.1%})"
                     await ch.send(f"{emoji} `{slug[:50]}` **{sname}** drop **{effective_drop:.1%}** ({pct:.0f}% of thr) @ {px:.0%} — {tag}")
         # fire if all rules met
-        if reason!="FIRE":continue
+        if reason!="FIRE":
+            if reason and effective_drop>=threshold:
+                log_decision(slug,sname,px,effective_drop,"blocked:"+str(reason))
+            continue
         # v16.13.1: mark cooldown at decision, before lock (fixes re-fire spam)
         mark_slug_traded(slug)
         revert=px+effective_drop*float(config["revert_pct"])
@@ -767,7 +780,7 @@ async def cmd_golive(i:discord.Interaction,confirm:str):
     if not auth_works:return await i.response.send_message("Auth fail.")
     if confirm!="CONFIRM LIVE":return await i.response.send_message("Type: CONFIRM LIVE")
     live_mode=True;bal=get_balance()
-    await i.response.send_message(f"**THE SHARP v16.13 IS LIVE (WebSocket)**\n${bal:.2f} | Flat ${config['bet_size']} bets\naec- only | today only | 8% drop\nTP/SL 8% | FOK + fill verified\nDon't touch for a week.")
+    await i.response.send_message(f"**THE SHARP v16.14 IS LIVE (WebSocket)**\n${bal:.2f} | Flat ${config['bet_size']} bets\naec- only | today only | 8% drop\nTP/SL 8% | FOK + fill verified\nDon't touch for a week.")
 
 @tree.command(name="gopaper",description="Paper")
 async def cmd_gopaper(i:discord.Interaction):
@@ -796,7 +809,7 @@ async def cmd_status(i:discord.Interaction):
     today_snaps=sum(1 for k in snaps if is_today_slug(k))
     ws_state="connected" if (stream and stream.ws) else "DOWN"
     ws_age=int(time.time()-stream.last_msg_at) if stream else -1
-    msg=(f"**v16.13.1 THE SHARP {mode} (WebSocket)**\n"
+    msg=(f"**v16.14 THE SHARP {mode} (WebSocket)**\n"
         f"${bal:.2f} | ${config['bet_size']} flat | drop {config['drop_threshold']:.0%}\n"
         f"TP {config['take_profit']:.0%} SL {config['stop_loss']:.0%}\n"
         f"WS: {ws_state} | last msg {ws_age}s ago | subs {len(stream.subscribed) if stream else 0}/{MAX_INSTRUMENTS}\n"
@@ -1159,7 +1172,7 @@ async def cmd_resume(i:discord.Interaction):
 async def cmd_config(i:discord.Interaction):
     if i.user.id!=OWNER:return await i.response.send_message("x",ephemeral=True)
     mode="LIVE" if live_mode else "PAPER"
-    await i.response.send_message(f"**{mode} | THE SHARP v16.13**\nLeagues: {', '.join(LEAGUES)}\n"+"\n".join([f"**{k}:** {v}" for k,v in config.items()]))
+    await i.response.send_message(f"**{mode} | THE SHARP v16.14**\nLeagues: {', '.join(LEAGUES)}\n"+"\n".join([f"**{k}:** {v}" for k,v in config.items()]))
 
 @tree.command(name="set",description="Set (persists to config.json)")
 @app_commands.describe(key="Key",value="Value")
@@ -1182,21 +1195,24 @@ async def cmd_set(i:discord.Interaction,key:str,value:str):
 
 @tree.command(name="update",description="Update")
 async def cmd_update(i:discord.Interaction):
+    # v16.14: git-based deploy. Pulls committed bot.py from the repo and restarts.
+    # No size limit, full history, no exec of arbitrary issue text. No pip step:
+    # the venv already has every dependency.
     if i.user.id!=OWNER:return await i.response.send_message("x",ephemeral=True)
     await i.response.defer()
     try:
-        import urllib.request
-        r=urllib.request.urlopen("https://api.github.com/repos/sarwood1010-beep/Sniperbot/issues?state=open&sort=created&direction=desc")
-        issues=json.loads(r.read().decode())
-        if not issues:return await i.followup.send("No issues.")
-        body=issues[0].get("body","")
-        if body.startswith("```"):body=body.strip("`").strip()
-        if body.startswith("python"):body=body[6:].strip()
-        with open("build_update.py","w") as f:f.write(body)
-        exec(open("build_update.py").read())
-        await i.followup.send(f"Updated: {issues[0].get('title','?')}. Restarting...")
+        import subprocess
+        REPO_DIR="/home/deploy/polymarket-discord-bot"
+        r=subprocess.run(["git","-C",REPO_DIR,"pull","--no-edit"],
+            capture_output=True,text=True,timeout=60)
+        out=(r.stdout+r.stderr).strip()
+        if r.returncode!=0:
+            return await i.followup.send("git pull failed (NOT restarting):\n```\n"+out[:1500]+"\n```")
+        if "Already up to date" in out:
+            return await i.followup.send("Already up to date - nothing to deploy.\n```\n"+out[:500]+"\n```")
+        await i.followup.send("Pulled latest. Restarting...\n```\n"+out[:1200]+"\n```")
         await asyncio.sleep(3)
-        import subprocess;subprocess.Popen(["sudo","systemctl","restart","sniper-bot"])
+        subprocess.Popen(["sudo","systemctl","restart","sniper-bot"])
     except Exception as e:await i.followup.send(f"Failed: {e}")
 
 # ─── v16.13: background loops ────────────────────────────────
@@ -1276,7 +1292,7 @@ async def on_ready():
         tot2,pe2,re2,w,l,pnl,wa2,ro2,ac2,lp,lt,dl2=get_summary()
         bal=get_balance() if auth_works else 0
         snaps=load_snaps()
-        msg=(f"**THE SHARP v16.13.1 online (WebSocket)**\n"
+        msg=(f"**THE SHARP v16.14 online (WebSocket)**\n"
             f"{'LIVE' if live_mode else 'PAPER'} | ${bal:.2f} | ${config['bet_size']} flat\n"
             f"aec- only | today only | {config['drop_threshold']:.0%} drop\n"
             f"Leagues: {', '.join(LEAGUES)}\n"
