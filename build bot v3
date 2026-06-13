@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+"""Run this script on your droplet to generate bot.py v3"""
+
+code = '''import os, discord, requests, json, asyncio
+from discord import app_commands
+from dotenv import load_dotenv
+from datetime import datetime, timezone
+
+load_dotenv()
+TOKEN = os.environ.get("DISCORD_TOKEN")
+ALERTS = int(os.environ.get("ALERTS_CHANNEL_ID", 0))
+TRADES = int(os.environ.get("TRADES_CHANNEL_ID", 0))
+OWNER = int(os.environ.get("AUTHORIZED_USER_ID", 0))
+API_BASE = "https://gamma-api.polymarket.com"
+
+scanning = True
+config = {
+    "scan_interval": 120,
+    "min_volume": 5000,
+    "dry_run": True,
+    "near_expiry_hours": 48,
+    "min_edge": 0.03,
+    "spread_alert": 0.05,
+}
+alerted = set()
+
+intents = discord.Intents.default()
+intents.message_content = True
+bot = discord.Client(intents=intents)
+tree = app_commands.CommandTree(bot)
+
+
+def fetch_us_markets(limit=20):
+    try:
+        r = requests.get(
+            f"{API_BASE}/markets",
+            params={
+                "limit": limit,
+                "active": "true",
+                "order": "volume24hr",
+                "ascending": "false",
+                "restricted": "false",
+            },
+        )
+        if r.status_code == 200:
+            markets = r.json()
+            return [m for m in markets if not m.get("restricted", True)]
+    except Exception as e:
+        print(f"Fetch error: {e}")
+    return []
+
+
+def parse_market(m):
+    question = m.get("question", "Unknown")
+    vol24 = float(m.get("volume24hr", 0))
+    volume = float(m.get("volume", 0))
+    liquidity = float(m.get("liquidity", 0))
+    end_date = m.get("endDate", "")
+    spread = float(m.get("spread", 0))
+    best_bid = float(m.get("bestBid", 0))
+    best_ask = float(m.get("bestAsk", 0))
+    last_price = float(m.get("lastTradePrice", 0))
+    slug = m.get("slug", "")
+    outcomes = m.get("outcomes", "[]")
+    prices = m.get("outcomePrices", "[]")
+    try:
+        outcomes = json.loads(outcomes) if isinstance(outcomes, str) else outcomes
+        prices = json.loads(prices) if isinstance(prices, str) else prices
+    except:
+        outcomes = []
+        prices = []
+    price_str = ""
+    for i, out in enumerate(outcomes):
+        if i < len(prices):
+            price_str += f"{out}: {float(prices[i]):.2c}  "
+    price_str = price_str.replace(":2c", "")
+    return {
+        "question": question,
+        "vol24": vol24,
+        "volume": volume,
+        "liquidity": liquidity,
+        "end_date": end_date,
+        "spread": spread,
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "last_price": last_price,
+        "slug": slug,
+        "outcomes": outcomes,
+        "prices": prices,
+        "price_str": price_str,
+    }
+
+
+def hours_until_expiry(end_date):
+    if not end_date or end_date == "Unknown":
+        return 99999
+    try:
+        end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+        return (end_dt - datetime.now(timezone.utc)).total_seconds() / 3600
+    except:
+        return 99999
+
+
+def find_near_expiry_signals(markets):
+    signals = []
+    for m in markets:
+        p = parse_market(m)
+        hours = hours_until_expiry(p["end_date"])
+        if hours <= 0 or hours > config["near_expiry_hours"]:
+            continue
+        for i, price in enumerate(p["prices"]):
+            pr = float(price)
+            if pr >= 0.85 or pr <= 0.15:
+                edge = min(pr, 1 - pr)
+                if edge >= 0.01:
+                    signals.append({
+                        "type": "near-expiry",
+                        "market": p["question"],
+                        "slug": p["slug"],
+                        "outcome": p["outcomes"][i] if i < len(p["outcomes"]) else "?",
+                        "price": pr,
+                        "hours_left": hours,
+                        "edge": edge,
+                        "volume": p["vol24"],
+                        "liquidity": p["liquidity"],
+                    })
+    return signals
+
+
+def find_spread_signals(markets):
+    signals = []
+    for m in markets:
+        p = parse_market(m)
+        if p["spread"] >= config["spread_alert"] and p["vol24"] >= config["min_volume"]:
+            signals.append({
+                "type": "wide-spread",
+                "market": p["question"],
+                "slug": p["slug"],
+                "spread": p["spread"],
+                "best_bid": p["best_bid"],
+                "best_ask": p["best_ask"],
+                "volume": p["vol24"],
+                "liquidity": p["liquidity"],
+            })
+    return signals
+
+
+def find_mispricing_signals(markets):
+    signals = []
+    for m in markets:
+        p = parse_market(m)
+        if len(p["prices"]) == 2:
+            try:
+                yes_price = float(p["prices"][0])
+                no_price = float(p["prices"][1])
+                total = yes_price + no_price
+                if abs(total - 1.0) > config["min_edge"]:
+                    signals.append({
+                        "type": "mispricing",
+                        "market": p["question"],
+                        "slug": p["slug"],
+                        "yes_price": yes_price,
+                        "no_price": no_price,
+                        "total": total,
+                        "gap": abs(total - 1.0),
+                        "volume": p["vol24"],
+                    })
+            except:
+                pass
+    return signals
+
+
+@tree.command(name="status", description="Bot status")
+async def cmd_status(interaction: discord.Interaction):
+    if interaction.user.id != OWNER:
+        return await interaction.response.send_message("Unauthorized", ephemeral=True)
+    mode = "SCANNING" if scanning else "PAUSED"
+    dry = "DRY RUN" if config["dry_run"] else "LIVE"
+    await interaction.response.send_message(
+        f"**Status:** {mode} | {dry}\\n"
+        f"**Scan interval:** {config['scan_interval']}s\\n"
+        f"**Min volume:** ${config['min_volume']}\\n"
+        f"**Near-expiry window:** {config['near_expiry_hours']}h\\n"
+        f"**Min edge:** {config['min_edge']:.0%}\\n"
+        f"**Spread alert:** {config['spread_alert']:.0%}\\n"
+        f"**Alerts sent:** {len(alerted)}"
+    )
+
+
+@tree.command(name="markets", description="Top US-eligible markets")
+async def cmd_markets(interaction: discord.Interaction):
+    if interaction.user.id != OWNER:
+        return await interaction.response.send_message("Unauthorized", ephemeral=True)
+    await interaction.response.defer()
+    markets = fetch_us_markets(10)
+    if not markets:
+        return await interaction.followup.send("No US markets found.")
+    embed = discord.Embed(title="Top US Markets (24h volume)", color=0x3B82F6)
+    for m in markets[:5]:
+        p = parse_market(m)
+        hours = hours_until_expiry(p["end_date"])
+        expiry = f"{hours:.0f}h left" if hours < 168 else p["end_date"][:10]
+        embed.add_field(
+            name=p["question"][:80],
+            value=(
+                f"Bid: {p['best_bid']:.2f} | Ask: {p['best_ask']:.2f} | Spread: {p['spread']:.2f}\\n"
+                f"24h Vol: ${p['vol24']:,.0f} | Liq: ${p['liquidity']:,.0f}\\n"
+                f"Expires: {expiry}"
+            ),
+            inline=False,
+        )
+    await interaction.followup.send(embed=embed)
+
+
+@tree.command(name="search", description="Search US markets")
+@app_commands.describe(keyword="Search term")
+async def cmd_search(interaction: discord.Interaction, keyword: str):
+    if interaction.user.id != OWNER:
+        return await interaction.response.send_message("Unauthorized", ephemeral=True)
+    await interaction.response.defer()
+    try:
+        r = requests.get(
+            f"{API_BASE}/markets",
+            params={"limit": "10", "active": "true", "search": keyword, "restricted": "false"},
+        )
+        markets = [m for m in r.json() if not m.get("restricted", True)] if r.status_code == 200 else []
+    except:
+        markets = []
+    if not markets:
+        return await interaction.followup.send(f"No US markets for: {keyword}")
+    embed = discord.Embed(title=f"US Markets: {keyword}", color=0x3B82F6)
+    for m in markets[:5]:
+        p = parse_market(m)
+        embed.add_field(
+            name=p["question"][:80],
+            value=f"Bid: {p['best_bid']:.2f} | Ask: {p['best_ask']:.2f} | 24h Vol: ${p['vol24']:,.0f}",
+            inline=False,
+        )
+    await interaction.followup.send(embed=embed)
+
+
+@tree.command(name="scan", description="Run signal scan now")
+async def cmd_scan(interaction: discord.Interaction):
+    if interaction.user.id != OWNER:
+        return await interaction.response.send_message("Unauthorized", ephemeral=True)
+    await interaction.response.defer()
+    markets = fetch_us_markets(50)
+    ne = find_near_expiry_signals(markets)
+    sp = find_spread_signals(markets)
+    mp = find_mispricing_signals(markets)
+    total = len(ne) + len(sp) + len(mp)
+    if total == 0:
+        return await interaction.followup.send("No signals found right now.")
+    embed = discord.Embed(title=f"Scan Results: {total} signals", color=0xF59E0B)
+    for s in ne[:3]:
+        embed.add_field(
+            name=f"NEAR-EXPIRY: {s['outcome']} @ {s['price']:.2f}",
+            value=f"{s['market'][:60]}\\n{s['hours_left']:.1f}h left | Vol: ${s['volume']:,.0f}",
+            inline=False,
+        )
+    for s in sp[:3]:
+        embed.add_field(
+            name=f"WIDE SPREAD: {s['spread']:.1%}",
+            value=f"{s['market'][:60]}\\nBid: {s['best_bid']:.2f} | Ask: {s['best_ask']:.2f}",
+            inline=False,
+        )
+    for s in mp[:3]:
+        embed.add_field(
+            name=f"MISPRICING: {s['gap']:.1%} gap",
+            value=f"{s['market'][:60]}\\nYes: {s['yes_price']:.2f} + No: {s['no_price']:.2f} = {s['total']:.2f}",
+            inline=False,
+        )
+    await interaction.followup.send(embed=embed)
+
+
+@tree.command(name="pause", description="Pause scanning")
+async def cmd_pause(interaction: discord.Interaction):
+    global scanning
+    if interaction.user.id != OWNER:
+        return await interaction.response.send_message("Unauthorized", ephemeral=True)
+    scanning = False
+    await interaction.response.send_message("Paused.")
+
+
+@tree.command(name="resume", description="Resume scanning")
+async def cmd_resume(interaction: discord.Interaction):
+    global scanning
+    if interaction.user.id != OWNER:
+        return await interaction.response.send_message("Unauthorized", ephemeral=True)
+    scanning = True
+    await interaction.response.send_message("Resumed.")
+
+
+@tree.command(name="config", description="View config")
+async def cmd_config(interaction: discord.Interaction):
+    if interaction.user.id != OWNER:
+        return await interaction.response.send_message("Unauthorized", ephemeral=True)
+    lines = [f"**{k}:** {v}" for k, v in config.items()]
+    await interaction.response.send_message("\\n".join(lines))
+
+
+@tree.command(name="set", description="Update config value")
+@app_commands.describe(key="Config key", value="New value")
+async def cmd_set(interaction: discord.Interaction, key: str, value: str):
+    if interaction.user.id != OWNER:
+        return await interaction.response.send_message("Unauthorized", ephemeral=True)
+    if key not in config:
+        keys = ", ".join(config.keys())
+        return await interaction.response.send_message(f"Unknown key. Valid: {keys}")
+    old = config[key]
+    if isinstance(old, bool):
+        config[key] = value.lower() in ("true", "1", "yes")
+    elif isinstance(old, float):
+        config[key] = float(value)
+    elif isinstance(old, int):
+        config[key] = int(value)
+    else:
+        config[key] = value
+    await interaction.response.send_message(f"**{key}:** {old} -> {config[key]}")
+
+
+async def scanner_loop():
+    await bot.wait_until_ready()
+    ch = bot.get_channel(ALERTS)
+    while not bot.is_closed():
+        if scanning and ch:
+            try:
+                markets = fetch_us_markets(50)
+
+                # Near-expiry signals
+                for s in find_near_expiry_signals(markets):
+                    sig_id = f"ne-{s['slug']}-{s['outcome']}"
+                    if sig_id not in alerted:
+                        alerted.add(sig_id)
+                        embed = discord.Embed(title="NEAR-EXPIRY", color=0xF59E0B)
+                        embed.add_field(name="Market", value=s["market"][:100], inline=False)
+                        embed.add_field(name="Outcome", value=s["outcome"], inline=True)
+                        embed.add_field(name="Price", value=f"{s['price']:.2f}", inline=True)
+                        embed.add_field(name="Hours Left", value=f"{s['hours_left']:.1f}h", inline=True)
+                        embed.add_field(name="24h Volume", value=f"${s['volume']:,.0f}", inline=True)
+                        await ch.send(embed=embed)
+
+                # Wide spread signals
+                for s in find_spread_signals(markets):
+                    sig_id = f"sp-{s['slug']}"
+                    if sig_id not in alerted:
+                        alerted.add(sig_id)
+                        embed = discord.Embed(title="WIDE SPREAD", color=0x3B82F6)
+                        embed.add_field(name="Market", value=s["market"][:100], inline=False)
+                        embed.add_field(name="Spread", value=f"{s['spread']:.1%}", inline=True)
+                        embed.add_field(name="Bid/Ask", value=f"{s['best_bid']:.2f} / {s['best_ask']:.2f}", inline=True)
+                        embed.add_field(name="24h Volume", value=f"${s['volume']:,.0f}", inline=True)
+                        await ch.send(embed=embed)
+
+                # Mispricing signals
+                for s in find_mispricing_signals(markets):
+                    sig_id = f"mp-{s['slug']}"
+                    if sig_id not in alerted:
+                        alerted.add(sig_id)
+                        embed = discord.Embed(title="MISPRICING", color=0xEF4444)
+                        embed.add_field(name="Market", value=s["market"][:100], inline=False)
+                        embed.add_field(name="Yes + No", value=f"{s['yes_price']:.2f} + {s['no_price']:.2f} = {s['total']:.2f}", inline=True)
+                        embed.add_field(name="Gap", value=f"{s['gap']:.1%}", inline=True)
+                        embed.add_field(name="24h Volume", value=f"${s['volume']:,.0f}", inline=True)
+                        await ch.send(embed=embed)
+
+            except Exception as e:
+                print(f"Scanner error: {e}")
+                await ch.send(f"Scanner error: {e}")
+
+        await asyncio.sleep(config["scan_interval"])
+
+
+@bot.event
+async def on_ready():
+    await tree.sync()
+    print(f"Bot ready as {bot.user}")
+    ch = bot.get_channel(ALERTS)
+    if ch:
+        await ch.send(
+            "**Sniper Bot v3 online!**\\n"
+            "US-only markets | 3 signal types\\n"
+            "Commands: /markets /search /scan /status /config /set /pause /resume"
+        )
+    bot.loop.create_task(scanner_loop())
+
+
+bot.run(TOKEN)
+'''
+
+# Fix the format string issue
+code = code.replace("{float(prices[i]):.2c}", "{float(prices[i]):.2f}")
+code = code.replace(':2c', ':2f')
+code = code.replace('":.2c}', '":.2f}')
+
+with open("bot.py", "w") as f:
+    f.write(code)
+print("bot.py v3 created successfully!")
