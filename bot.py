@@ -280,7 +280,7 @@ def fetch_exchange_positions():
 def _pos_size(p):
     """Best-effort extract a position size from an unknown-shape object.
     Returns float; 0 if we can't find one (treated as 'no real exposure')."""
-    for k in ("size","quantity","shares","netQuantity","position","amount"):
+    for k in ("netPosition","netPositionDecimal","qtyAvailable","size","quantity","shares","netQuantity","position","amount"):
         if k in p:
             try:
                 f=float(p[k])
