@@ -890,7 +890,7 @@ async def cmd_status(i:discord.Interaction):
     today_snaps=sum(1 for k in snaps if is_today_slug(k))
     ws_state="connected" if (stream and stream.ws) else "DOWN"
     ws_age=int(time.time()-stream.last_msg_at) if stream else -1
-    msg=(f"**v16.13.1 THE SHARP {mode} (WebSocket)**\n"
+    msg=(f"**v16.15 THE SHARP {mode} (WebSocket)**\n"
         f"${bal:.2f} | ${config['bet_size']} flat | drop {config['drop_threshold']:.0%}\n"
         f"TP {config['take_profit']:.0%} SL {config['stop_loss']:.0%}\n"
         f"WS: {ws_state} | last msg {ws_age}s ago | subs {len(stream.subscribed) if stream else 0}/{MAX_INSTRUMENTS}\n"
