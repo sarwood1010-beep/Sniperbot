@@ -48,16 +48,10 @@ def record_raw_ws(raw):
     RAW_WS_LOG.append((time.time(),raw[:2000]))
     while len(RAW_WS_LOG)>RAW_WS_LOG_MAX:RAW_WS_LOG.pop(0)
 
-# v16.9: decision log. Every threshold-crossing evaluation logs its outcome here
-# (FIRE/recorded, cooldown, dead market, drop too large, band, edge, daily limit).
-# /reconcile cross-checks this against local trades and Discord alerts.
-# v16.14: RESTORED. This block and log_decision() were accidentally deleted in
-# v16.13.1 when comments were trimmed to fit GitHub's 65,536-char issue-body
-# limit. That made /reconcile crash (NameError) and silently broke every FIRE
-# decision (log_decision was called but undefined, caught by the safety wrapper).
-# With git-based deploy there is no size limit, so it's back, with full comments.
-DECISION_LOG=[]                  # [{ts, slug, side, price, drop, outcome}, ...]
-DECISION_LOG_MAX=500             # rolling cap on in-memory decision history
+# v16.9 decision log; v16.14 RESTORED (deleted in v16.13.1 by issue-size trimming,
+# which crashed /reconcile and silently broke every FIRE decision).
+DECISION_LOG=[]
+DECISION_LOG_MAX=500
 
 def log_decision(slug,side,price,drop,outcome):
     DECISION_LOG.append({"ts":time.time(),"slug":slug,"side":side,
@@ -122,7 +116,6 @@ config={
     "max_price_sum":1.10,              # v16.11: reject markets where long+short prices sum > this
     "max_drop_sanity":0.20,            # v16.13: refuse to fire if drop magnitude exceeds this (phantom-drop guard)
     "slug_cooldown_min":30,            # v16.13: after trading a slug, lock it from new trades for N minutes
-    "reconcile_min":10,                # v16.15: minutes between periodic exchange-vs-local drift checks
 }
 
 LEAGUES=["mlb","nba","wta","atp"]
@@ -235,76 +228,6 @@ def get_balance():
             if b.get("currency")=="USD":return float(b.get("buyingPower",0))
     except:pass
     return 0
-
-# ─── v16.15: exchange reconciliation (Polymarket = source of truth) ──────────
-# Tonight's incident: a /reset wiped local trade records while real positions
-# stayed open on the exchange, leaving the bot blind to money it was supposed to
-# manage. Root cause: the bot trusted its local file instead of the exchange.
-# These helpers make the exchange authoritative. We only verified the positions
-# call returns an empty {"positions":{}, "nextCursor":"", "eof":true,
-# "availablePositions":[]} shape, so we handle the populated shape DEFENSIVELY:
-# log the raw structure the first time we see a real position rather than
-# guessing field names.
-def fetch_exchange_positions():
-    """Return (ok, list_of_raw_position_objects). ok=False means we could NOT
-    reach/verify the exchange — callers must treat that as 'unknown', never as
-    'flat'. Paginates via nextCursor/eof."""
-    if not auth_works:
-        return False, []
-    out=[]
-    cursor=""
-    try:
-        for _ in range(20):  # hard page cap; 20 pages is far more than we'd hold
-            resp=pm.portfolio.positions()
-            if not isinstance(resp,dict):
-                return False, []
-            pos=resp.get("positions",{})
-            # positions may be a dict keyed by market/token, or a list — handle both
-            if isinstance(pos,dict):
-                for k,v in pos.items():
-                    if isinstance(v,dict):
-                        v=dict(v); v.setdefault("_key",k)
-                        out.append(v)
-                    else:
-                        out.append({"_key":k,"_value":v})
-            elif isinstance(pos,list):
-                out.extend(pos)
-            cursor=resp.get("nextCursor","")
-            if resp.get("eof",True) or not cursor:
-                break
-        return True, out
-    except Exception as e:
-        print(f"[recon] positions fetch failed: {e}")
-        return False, []
-
-def _pos_size(p):
-    """Best-effort extract a position size from an unknown-shape object.
-    Returns float; 0 if we can't find one (treated as 'no real exposure')."""
-    for k in ("size","quantity","shares","netQuantity","position","amount"):
-        if k in p:
-            try:
-                f=float(p[k])
-                if f!=0:return f
-            except (TypeError,ValueError):pass
-    return 0.0
-
-def real_open_positions():
-    """(ok, [raw positions with nonzero size]). ok=False => could not verify."""
-    ok,raw=fetch_exchange_positions()
-    if not ok:
-        return False, []
-    live=[p for p in raw if _pos_size(p)!=0]
-    return True, live
-
-def reconcile_report():
-    """Compare exchange truth vs local open trades. Returns a dict the callers
-    format for Discord. Does NOT mutate anything."""
-    ok,exch=real_open_positions()
-    d=load_data()
-    local_open=[t for t in d.get("trades",[]) if t.get("status")=="open"]
-    return {"ok":ok,"exchange":exch,"local_open":local_open,
-            "n_exchange":len(exch),"n_local":len(local_open)}
-# ─── end v16.15 reconciliation helpers ───────────────────────────────────────
 
 def get_side_intent(side_name,sides_info):
     for s in sides_info:
@@ -784,12 +707,8 @@ async def on_market_tick(slug,payload):
                     await ch.send(f"{emoji} `{slug[:50]}` **{sname}** drop **{effective_drop:.1%}** ({pct:.0f}% of thr) @ {px:.0%} — {tag}")
         # fire if all rules met
         if reason!="FIRE":
-            # v16.14: log blocked threshold-crossing decisions (cooldown, dead
-            # market, drop too large, band, edge, daily limit) so /reconcile can
-            # show WHY trades did or didn't fire. This is the diagnostic data we
-            # need to measure the edge cleanly over the coming week.
             if reason and effective_drop>=threshold:
-                log_decision(slug,sname,px,effective_drop,f"blocked:{reason}")
+                log_decision(slug,sname,px,effective_drop,"blocked:"+str(reason))
             continue
         # v16.13.1: mark cooldown at decision, before lock (fixes re-fire spam)
         mark_slug_traded(slug)
@@ -861,7 +780,7 @@ async def cmd_golive(i:discord.Interaction,confirm:str):
     if not auth_works:return await i.response.send_message("Auth fail.")
     if confirm!="CONFIRM LIVE":return await i.response.send_message("Type: CONFIRM LIVE")
     live_mode=True;bal=get_balance()
-    await i.response.send_message(f"**THE SHARP v16.15 IS LIVE (WebSocket)**\n${bal:.2f} | Flat ${config['bet_size']} bets\naec- only | today only | 8% drop\nTP/SL 8% | FOK + fill verified\nDon't touch for a week.")
+    await i.response.send_message(f"**THE SHARP v16.14 IS LIVE (WebSocket)**\n${bal:.2f} | Flat ${config['bet_size']} bets\naec- only | today only | 8% drop\nTP/SL 8% | FOK + fill verified\nDon't touch for a week.")
 
 @tree.command(name="gopaper",description="Paper")
 async def cmd_gopaper(i:discord.Interaction):
@@ -890,7 +809,7 @@ async def cmd_status(i:discord.Interaction):
     today_snaps=sum(1 for k in snaps if is_today_slug(k))
     ws_state="connected" if (stream and stream.ws) else "DOWN"
     ws_age=int(time.time()-stream.last_msg_at) if stream else -1
-    msg=(f"**v16.13.1 THE SHARP {mode} (WebSocket)**\n"
+    msg=(f"**v16.14 THE SHARP {mode} (WebSocket)**\n"
         f"${bal:.2f} | ${config['bet_size']} flat | drop {config['drop_threshold']:.0%}\n"
         f"TP {config['take_profit']:.0%} SL {config['stop_loss']:.0%}\n"
         f"WS: {ws_state} | last msg {ws_age}s ago | subs {len(stream.subscribed) if stream else 0}/{MAX_INSTRUMENTS}\n"
@@ -1231,80 +1150,11 @@ async def cmd_res(i:discord.Interaction,trade_id:str,result:str):
     if i.user.id!=OWNER:return await i.response.send_message("x",ephemeral=True)
     resolve_at_expiry(trade_id,result.lower() in ("won","win","w","yes","1"));await i.response.send_message(f"Resolved: {trade_id}")
 
-@tree.command(name="sync",description="Reconcile: compare exchange positions vs my records")
-async def cmd_sync(i:discord.Interaction):
-    # v16.15: on-demand reconciliation. Asks the exchange "what do I actually
-    # hold?" and compares to local open trades. Flags any drift either way.
+@tree.command(name="reset",description="Reset")
+async def cmd_reset(i:discord.Interaction):
     if i.user.id!=OWNER:return await i.response.send_message("x",ephemeral=True)
-    await i.response.defer()
-    rep=reconcile_report()
-    if not rep["ok"]:
-        return await i.followup.send("⚠️ **Sync failed** — couldn't reach/verify the exchange "
-            "(API down or auth off). Cannot confirm whether records match reality.")
-    exch=rep["exchange"];local=rep["local_open"]
-    lines=[f"**Sync** — exchange: {rep['n_exchange']} open | local records: {rep['n_local']} open"]
-    if rep["n_exchange"]==0 and rep["n_local"]==0:
-        lines.append("✅ Both flat. Records match reality.")
-        return await i.followup.send("\n".join(lines))
-    # show exchange positions (raw, since we handle unknown shape defensively)
-    if exch:
-        lines.append("\n__On exchange:__")
-        for p in exch[:10]:
-            lines.append(f"• `{p.get('_key','?')}` size={_pos_size(p)}")
-        # first time we see a real position, dump the full structure to the log
-        print(f"[sync] raw exchange position sample: {exch[0]}")
-    # local-only (bot thinks open, exchange doesn't show)
-    local_only=local if not exch else local  # without a key map we can't pair; report counts
-    if local and not exch:
-        lines.append("\n⚠️ __Local records show open trades the exchange does NOT report.__ "
-            "These may have resolved/closed. Consider /resolve or investigate.")
-    if exch and not local:
-        lines.append("\n🚨 __Exchange shows positions I have NO record of.__ "
-            "This is the orphaned-position case. The raw structure is logged. "
-            "I can't manage these (no entry data) — close them in the app or review before resuming.")
-    await i.followup.send("\n".join(lines)[:1900])
-
-@tree.command(name="reset",description="Reset bot records (blocked if live positions open)")
-@app_commands.describe(scope="'stats' = clear history only | 'all' = wipe everything")
-async def cmd_reset(i:discord.Interaction,scope:str="all"):
-    # v16.15: hard-block reset while real positions are open on the exchange.
-    # Tonight a /reset wiped local records while real money sat open, orphaning
-    # positions the bot then couldn't see or manage. Now reset asks the exchange
-    # first and REFUSES if anything is open — or if it can't verify (fail-safe:
-    # "can't confirm flat" is treated as "don't wipe"). To actually reset, close
-    # positions first (or use /closeall), then reset.
-    if i.user.id!=OWNER:return await i.response.send_message("x",ephemeral=True)
-    await i.response.defer()
-    scope=(scope or "all").lower().strip()
-    if scope not in ("stats","all"):
-        return await i.followup.send("Usage: `/reset scope:stats` (history only) or `/reset scope:all` (everything).")
-    # Exchange safety gate — applies to both scopes
-    ok,exch=real_open_positions()
-    if not ok:
-        return await i.followup.send("🛑 **Reset blocked.** Could not verify exchange positions "
-            "(API unreachable or auth down). Refusing to wipe records when I can't confirm you're "
-            "flat. Try again when the API responds, or use `/closeall` first.")
-    if exch:
-        lines=["🛑 **Reset blocked — real positions are open on the exchange:**"]
-        for p in exch[:10]:
-            lines.append(f"• `{p.get('_key','?')}` size={_pos_size(p)}")
-        lines.append("\nClose them first (`/closeall` cancels orders; close positions in the app "
-            "or with /sync guidance), then reset. I will not wipe records while live money is open.")
-        return await i.followup.send("\n".join(lines))
-    # Safe to reset — exchange confirms flat
-    if scope=="stats":
-        d=load_data()
-        d["paper_pnl"]=0;d["total_wagered"]=0;d["wins"]=0;d["losses"]=0
-        d["exits_taken"]=0;d["exit_pnl"]=0;d["live_pnl"]=0;d["live_trades"]=0
-        d["daily_loss"]=0;d["daily_reset"]="";d["exit_calibration"]={}
-        # keep any open trades (there are none on exchange, but keep local list intact)
-        d["trades"]=[t for t in d.get("trades",[]) if t.get("status")=="open"]
-        save_data(d)
-        return await i.followup.send("✅ **Stats reset** (history/counters cleared). Exchange confirmed flat. Cache/snapshots untouched.")
-    # scope == all
     save_data({"trades":[],"paper_pnl":0,"total_wagered":0,"wins":0,"losses":0,"exits_taken":0,"exit_pnl":0,"live_pnl":0,"live_trades":0,"daily_loss":0,"daily_reset":"","exit_calibration":{}})
-    save_cache({});save_snaps({})
-    await i.followup.send("✅ **Full reset.** Exchange confirmed flat before wiping. Records, cache, and snapshots cleared.")
+    save_cache({});save_snaps({});await i.response.send_message("Reset.")
 
 @tree.command(name="pause",description="Pause")
 async def cmd_pause(i:discord.Interaction):
@@ -1322,7 +1172,7 @@ async def cmd_resume(i:discord.Interaction):
 async def cmd_config(i:discord.Interaction):
     if i.user.id!=OWNER:return await i.response.send_message("x",ephemeral=True)
     mode="LIVE" if live_mode else "PAPER"
-    await i.response.send_message(f"**{mode} | THE SHARP v16.15**\nLeagues: {', '.join(LEAGUES)}\n"+"\n".join([f"**{k}:** {v}" for k,v in config.items()]))
+    await i.response.send_message(f"**{mode} | THE SHARP v16.14**\nLeagues: {', '.join(LEAGUES)}\n"+"\n".join([f"**{k}:** {v}" for k,v in config.items()]))
 
 @tree.command(name="set",description="Set (persists to config.json)")
 @app_commands.describe(key="Key",value="Value")
@@ -1345,16 +1195,9 @@ async def cmd_set(i:discord.Interaction,key:str,value:str):
 
 @tree.command(name="update",description="Update")
 async def cmd_update(i:discord.Interaction):
-    # v16.14: git-based deploy. Previously this fetched the newest GitHub issue
-    # body, wrote it to build_update.py, exec()'d it (which wrote bot.py), then
-    # restarted. That worked but capped code at GitHub's 65,536-char issue-body
-    # limit, and the comment-trimming needed to fit silently deleted the
-    # DECISION_LOG block in v16.13.1. Now we pull the committed bot.py from the
-    # repo and restart. No size limit, full history, no exec of arbitrary text.
-    # Deliberately NO pip install step: the venv already has every dependency.
-    # Adding requirements handling here would risk breaking the venv on restart
-    # to solve a problem we don't have. Add it later, on purpose, when a genuinely
-    # new dependency is introduced.
+    # v16.14: git-based deploy. Pulls committed bot.py from the repo and restarts.
+    # No size limit, full history, no exec of arbitrary issue text. No pip step:
+    # the venv already has every dependency.
     if i.user.id!=OWNER:return await i.response.send_message("x",ephemeral=True)
     await i.response.defer()
     try:
@@ -1364,10 +1207,10 @@ async def cmd_update(i:discord.Interaction):
             capture_output=True,text=True,timeout=60)
         out=(r.stdout+r.stderr).strip()
         if r.returncode!=0:
-            return await i.followup.send(f"git pull failed (NOT restarting):\n```\n{out[:1500]}\n```")
+            return await i.followup.send("git pull failed (NOT restarting):\n```\n"+out[:1500]+"\n```")
         if "Already up to date" in out:
-            return await i.followup.send(f"Already up to date - nothing to deploy.\n```\n{out[:500]}\n```")
-        await i.followup.send(f"Pulled latest. Restarting...\n```\n{out[:1200]}\n```")
+            return await i.followup.send("Already up to date - nothing to deploy.\n```\n"+out[:500]+"\n```")
+        await i.followup.send("Pulled latest. Restarting...\n```\n"+out[:1200]+"\n```")
         await asyncio.sleep(3)
         subprocess.Popen(["sudo","systemctl","restart","sniper-bot"])
     except Exception as e:await i.followup.send(f"Failed: {e}")
@@ -1435,76 +1278,21 @@ async def watchdog_loop():
                 if stream.ws:await stream.ws.close()
             except:pass
 
-async def reconcile_loop():
-    """v16.15: periodic drift check. Every N minutes, compare exchange positions
-    to local open records and alert on disagreement. The safety net that catches
-    fills we missed, manual trades, or anything that slipped between the cracks.
-    Only alerts on the dangerous case (exchange has a position we don't know),
-    to avoid noise. Interval is config['reconcile_min'] (default 10)."""
-    global scanning
-    await asyncio.sleep(60)  # let things settle after boot
-    while not bot.is_closed():
-        interval=float(config.get("reconcile_min",10))*60
-        await asyncio.sleep(max(60,interval))
-        try:
-            rep=reconcile_report()
-            if not rep["ok"]:
-                continue  # transient API blip; startup gate handles hard failures
-            if rep["n_exchange"]>0 and rep["n_local"]==0:
-                scanning=False
-                print(f"[recon-loop] ORPHAN raw sample: {rep['exchange'][0]}")
-                ch=bot.get_channel(ALERTS)
-                if ch:
-                    lines=["🚨 **Drift detected** — exchange shows position(s) I have no record of. PAUSED."]
-                    for p in rep["exchange"][:10]:
-                        lines.append(f"• `{p.get('_key','?')}` size={_pos_size(p)}")
-                    lines.append("Review/close, then `/resume`. Raw structure logged.")
-                    await ch.send("\n".join(lines)[:1900])
-        except Exception as e:
-            print(f"[recon-loop] error: {e}")
-
 @bot.event
 async def on_ready():
-    global stream,scanning
+    global stream
     await tree.sync();print(f"Bot ready as {bot.user}")
     stream=MarketStream(on_market_tick)
     bot.loop.create_task(stream.run())
     bot.loop.create_task(discovery_loop())
     bot.loop.create_task(resolve_loop())
     bot.loop.create_task(watchdog_loop())
-    bot.loop.create_task(reconcile_loop())
     ch=bot.get_channel(ALERTS)
-    # v16.15: startup reconciliation. Ask the exchange what we actually hold.
-    # If there are positions with no local record (the orphaned-position case
-    # that bit us tonight), PAUSE and alert — never silently scan/trade on top
-    # of a picture we know is incomplete.
-    try:
-        rep=reconcile_report()
-        if not rep["ok"]:
-            scanning=False
-            if ch:await ch.send("🛑 **Startup: could not verify exchange positions** "
-                "(API/auth issue). Started PAUSED as a precaution. Use `/sync` to recheck, "
-                "`/resume` once verified.")
-        elif rep["n_exchange"]>0 and rep["n_local"]==0:
-            scanning=False
-            print(f"[startup-recon] ORPHAN raw sample: {rep['exchange'][0]}")
-            lines=["🚨 **Startup: found exchange positions I have NO record of.** Started PAUSED."]
-            for p in rep["exchange"][:10]:
-                lines.append(f"• `{p.get('_key','?')}` size={_pos_size(p)}")
-            lines.append("These are orphaned (no local entry data, so I can't manage TP/SL). "
-                "Review/close them, then `/resume`. Raw structure logged for adoption support.")
-            if ch:await ch.send("\n".join(lines)[:1900])
-        elif rep["n_exchange"]>0:
-            # exchange has positions AND we have local records — note it, keep running
-            if ch:await ch.send(f"ℹ️ Startup reconciliation: {rep['n_exchange']} exchange position(s), "
-                f"{rep['n_local']} local record(s). Use `/sync` for detail.")
-    except Exception as e:
-        print(f"[startup-recon] error: {e}")
     if ch:
         tot2,pe2,re2,w,l,pnl,wa2,ro2,ac2,lp,lt,dl2=get_summary()
         bal=get_balance() if auth_works else 0
         snaps=load_snaps()
-        msg=(f"**THE SHARP v16.15 online (WebSocket)**\n"
+        msg=(f"**THE SHARP v16.14 online (WebSocket)**\n"
             f"{'LIVE' if live_mode else 'PAPER'} | ${bal:.2f} | ${config['bet_size']} flat\n"
             f"aec- only | today only | {config['drop_threshold']:.0%} drop\n"
             f"Leagues: {', '.join(LEAGUES)}\n"
