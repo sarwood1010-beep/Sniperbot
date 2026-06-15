@@ -337,9 +337,12 @@ def place_order(slug,side_name,price,dollar_amount,sides_info):
             print(f"KILLED: {slug} {side_name} @ {price}");return None,0
         actual_cost=0;actual_qty=0
         for ex in execs:
-            try:eq=float(ex.get("quantity",ex.get("size",0)));ep=float(ex.get("price",price));actual_cost+=eq*ep;actual_qty+=eq
+            try:
+                eq=float(ex.get("lastShares",ex.get("quantity",ex.get("size",0))) or 0)
+                _px=ex.get("lastPx",ex.get("price",price))
+                ep=float(_px.get("value",price) if isinstance(_px,dict) else _px)
+                actual_cost+=eq*ep;actual_qty+=eq
             except:pass
-        if actual_qty<=0:return None,0
         print(f"FILLED: {actual_qty} @ ${actual_cost/actual_qty:.3f} = ${actual_cost:.2f}")
         return order,actual_cost
     except Exception as e:
