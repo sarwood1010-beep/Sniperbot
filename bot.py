@@ -1414,18 +1414,33 @@ async def resolve_loop():
                 await asyncio.sleep(config["resolve_interval"]);continue
             res=(pm.portfolio.activities() or {}).get("activities",[])
             settled={}
+            closed_manual={}
             for a in res:
-                if a.get("type")!="ACTIVITY_TYPE_POSITION_RESOLUTION":continue
-                pr=a.get("positionResolution") or {}
-                slug=pr.get("marketSlug")
-                if not slug or slug in settled:continue
-                raw=((pr.get("afterPosition") or {}).get("realized") or {}).get("value")
-                try:settled[slug]=float(raw)
-                except (TypeError,ValueError):settled[slug]=0.0
+                typ=a.get("type")
+                if typ=="ACTIVITY_TYPE_POSITION_RESOLUTION":
+                    pr=a.get("positionResolution") or {}
+                    slug=pr.get("marketSlug")
+                    if not slug or slug in settled:continue
+                    raw=((pr.get("afterPosition") or {}).get("realized") or {}).get("value")
+                    try:settled[slug]=float(raw)
+                    except (TypeError,ValueError):settled[slug]=0.0
+                elif typ=="ACTIVITY_TYPE_TRADE":
+                    tr=a.get("trade") or {}
+                    slug=tr.get("marketSlug")
+                    if not slug or slug in closed_manual:continue
+                    rp=(tr.get("realizedPnl") or {}).get("value")
+                    try:rp=float(rp)
+                    except (TypeError,ValueError):rp=0.0
+                    if abs(rp)>=0.005:closed_manual[slug]=rp
             d=load_data()
             for t in [x for x in d["trades"] if x.get("status")=="open"]:
-                if t["slug"] not in settled:continue
-                pnl=settled[t["slug"]]
+                slug=t["slug"]
+                if slug in settled:
+                    pnl=settled[slug]
+                elif slug in closed_manual:
+                    pnl=closed_manual[slug]
+                else:
+                    continue
                 won=True if pnl>0.005 else (False if pnl<-0.005 else None)
                 result=resolve_at_expiry(t["id"],won,pnl)
                 if result and ch:
