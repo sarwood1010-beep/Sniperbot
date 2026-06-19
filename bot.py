@@ -160,7 +160,7 @@ except Exception as _e:print(f"[config] load err: {_e}")
 
 def search_events(q):
     try:
-        r=pm.search.query({"query":q})
+        r=pm.search.query({"query":q,"limit":50})
         if isinstance(r,dict):
             for v in r.values():
                 if isinstance(v,list):return v
