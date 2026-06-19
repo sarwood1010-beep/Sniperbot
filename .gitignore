@@ -1,11 +1,8 @@
-.env
-*.json
-venv/
+bot.py.pre-*
+order_capture.jsonl
+diag.py
+patch_*.py
 __pycache__/
 *.pyc
-bot.py.working-*
-bot_backup.py
-build_bot*.py
-build_update.py
-check*.py
-test_*.py
+venv/
+0
