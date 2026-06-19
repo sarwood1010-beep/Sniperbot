@@ -441,14 +441,13 @@ def exit_trade(tid,ep,reason):
             data["exit_calibration"]=ec;save_data(data);return t
     return None
 
-def resolve_at_expiry(tid,won,real_pnl=None):
+def resolve_at_expiry(tid,won):
     data=load_data()
     for t in data["trades"]:
         if t["id"]==tid and t.get("status")=="open":
             t["status"]="resolved";t["resolved"]=True;t["won"]=won;t["exit_reason"]="expiry"
-            t["pnl"]=real_pnl if real_pnl is not None else (t["bet_size"]*(1/t["entry_price"]-1) if won else -t["bet_size"])
-            if won:data["wins"]+=1
-            else:data["losses"]+=1;add_daily_loss(abs(t["pnl"]))
+            if won:t["pnl"]=t["bet_size"]*(1/t["entry_price"]-1);data["wins"]+=1
+            else:t["pnl"]=-t["bet_size"];data["losses"]+=1;add_daily_loss(t["bet_size"])
             data["paper_pnl"]+=t["pnl"];data["total_wagered"]+=t["bet_size"]
             if t.get("live"):data["live_pnl"]=data.get("live_pnl",0)+t["pnl"]
             save_data(data);return t
@@ -1410,32 +1409,27 @@ async def resolve_loop():
     ch=bot.get_channel(TRADES)
     while not bot.is_closed():
         try:
-            if not auth_works:
-                await asyncio.sleep(config["resolve_interval"]);continue
-            res=(pm.portfolio.activities() or {}).get("activities",[])
-            settled={}
-            for a in res:
-                if a.get("type")!="ACTIVITY_TYPE_POSITION_RESOLUTION":continue
-                pr=a.get("positionResolution") or {}
-                slug=pr.get("marketSlug")
-                if not slug or slug in settled:continue
-                raw=((pr.get("afterPosition") or {}).get("realized") or {}).get("value")
-                try:settled[slug]=float(raw)
-                except (TypeError,ValueError):settled[slug]=0.0
             d=load_data()
             for t in [x for x in d["trades"] if x.get("status")=="open"]:
-                if t["slug"] not in settled:continue
-                pnl=settled[t["slug"]]
-                won=True if pnl>0.005 else (False if pnl<-0.005 else None)
-                result=resolve_at_expiry(t["id"],won,pnl)
-                if result and ch:
-                    tag="LIVE" if t.get("live") else "PAPER"
-                    embed=discord.Embed(title=f"{'WON' if won else 'LOST'} [{tag}]",color=0x10B981 if won else 0xEF4444)
-                    embed.add_field(name="Market",value=t["question"][:60],inline=False)
-                    embed.add_field(name="P&L",value=f"${result['pnl']:+.2f}",inline=True)
-                    tot2,pe2,re2,w,l,pnl2,wa2,ro2,ac2,lp,lt,dl2=get_summary()
-                    embed.set_footer(text=f"${pnl2:+.2f} | {w}W-{l}L")
-                    await ch.send(embed=embed)
+                parts=t["slug"].split("-")
+                teams="-".join(parts[1:4]) if len(parts)>=4 and parts[0]=="aec" else t["slug"][:20]
+                for event in search_events(teams):
+                    for mkt in event.get("markets",[]):
+                        if mkt.get("slug")==t["slug"] and mkt.get("closed"):
+                            for s in mkt.get("marketSides",[]):
+                                try:
+                                    if float(s.get("price",0))>=0.95:
+                                        won=t["side"].lower()==s.get("description","").lower()
+                                        result=resolve_at_expiry(t["id"],won)
+                                        if result and ch:
+                                            tag="LIVE" if t.get("live") else "PAPER"
+                                            embed=discord.Embed(title=f"{'WON' if won else 'LOST'} [{tag}]",color=0x10B981 if won else 0xEF4444)
+                                            embed.add_field(name="Market",value=t["question"][:60],inline=False)
+                                            embed.add_field(name="P&L",value=f"${result['pnl']:+.2f}",inline=True)
+                                            tot2,pe2,re2,w,l,pnl,wa2,ro2,ac2,lp,lt,dl2=get_summary()
+                                            embed.set_footer(text=f"${pnl:+.2f} | {w}W-{l}L")
+                                            await ch.send(embed=embed)
+                                except:pass
                 await asyncio.sleep(2)
         except Exception as e:print(f"Resolve err: {e}")
         await asyncio.sleep(config["resolve_interval"])
