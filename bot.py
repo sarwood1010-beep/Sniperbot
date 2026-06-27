@@ -125,7 +125,7 @@ config={
     "reconcile_min":10,                # v16.15: minutes between periodic exchange-vs-local drift checks
 }
 
-LEAGUES=["mlb","nba","wta","atp"]
+LEAGUES=["wta","atp"]
 DATA_FILE=Path("/home/deploy/polymarket-discord-bot/signal_history.json")
 CACHE_FILE=Path("/home/deploy/polymarket-discord-bot/price_cache.json")
 SNAP_FILE=Path("/home/deploy/polymarket-discord-bot/pregame_snap.json")
