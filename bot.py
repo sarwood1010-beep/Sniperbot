@@ -8,6 +8,7 @@ import websockets
 from cryptography.hazmat.primitives.asymmetric import ed25519
 import core  # pure, unit-tested decision logic (single source of truth)
 import logging
+import urllib.request  # stdlib HTTP for the tennis data feed (no new dependency)
 
 # ─── Structured logging ──────────────────────────────────────────────────────
 # The three historical bugs (dead settlement loop, over-filtered discovery,
@@ -40,6 +41,7 @@ TOKEN=os.environ.get("DISCORD_TOKEN")
 ALERTS=int(os.environ.get("ALERTS_CHANNEL_ID",0))
 TRADES=int(os.environ.get("TRADES_CHANNEL_ID",0))
 OWNER=int(os.environ.get("AUTHORIZED_USER_ID",0))
+RAPIDAPI_KEY=os.environ.get("RAPIDAPI_KEY")   # tennis data feed (Stage-1 measurement)
 
 scanning=True
 live_mode=False
@@ -139,6 +141,12 @@ config={
     "max_drop_sanity":0.20,            # v16.13: refuse to fire if drop magnitude exceeds this (phantom-drop guard)
     "slug_cooldown_min":30,            # v16.13: after trading a slug, lock it from new trades for N minutes
     "reconcile_min":10,                # v16.15: minutes between periodic exchange-vs-local drift checks
+    # ── Stage-1 edge measurement (tennis model vs Polymarket price) ──
+    "measure_enabled":True,            # master switch for the measurement loop
+    "measure_interval":45,             # seconds between measurement sweeps
+    "measure_min_edge":0.04,           # edge threshold for a "would-fire" flag (measurement only)
+    "sim_fee":0.0,                     # harsh-fill fee fraction (calibrate later vs real fills)
+    "sim_slippage":0.0,                # harsh-fill absolute slippage against us
 }
 
 LEAGUES=["wta","atp"]
@@ -146,6 +154,16 @@ DATA_FILE=Path("/home/deploy/polymarket-discord-bot/signal_history.json")
 CACHE_FILE=Path("/home/deploy/polymarket-discord-bot/price_cache.json")
 SNAP_FILE=Path("/home/deploy/polymarket-discord-bot/pregame_snap.json")
 CONFIG_FILE=Path("/home/deploy/polymarket-discord-bot/config.json")
+MEASURE_FILE=Path("/home/deploy/polymarket-discord-bot/measurement_log.jsonl")
+
+# ── Tennis data feed (RapidAPI) — Stage-1 edge measurement ──
+FEED_HOST="tennis-api-atp-wta-itf.p.rapidapi.com"
+FEED_LIVE_URL=f"https://{FEED_HOST}/tennis/v2/extend/api/events/live"
+# Per-match anchor: {match_key: {"priors":(p1s,p2s),"anchor_prob":x,"anchor_ts":t}}
+# We anchor the model to the market's price at first sighting, then hold the
+# priors fixed and log how the model diverges from the market as the score moves.
+MATCH_ANCHORS={}
+
 intents=discord.Intents.default();intents.message_content=True
 bot=discord.Client(intents=intents);tree=app_commands.CommandTree(bot)
 
@@ -1431,6 +1449,120 @@ async def cmd_update(i:discord.Interaction):
         subprocess.Popen(["sudo","systemctl","restart","sniper-bot"])
     except Exception as e:await i.followup.send(f"Failed: {e}")
 
+@tree.command(name="edge",description="Stage-1: recent model-vs-market measurement records")
+@app_commands.describe(n="How many recent records (1-15, default 8)")
+async def cmd_edge(i:discord.Interaction,n:int=8):
+    if i.user.id!=OWNER:return await i.response.send_message("x",ephemeral=True)
+    await i.response.defer()
+    try:
+        n=max(1,min(15,n))
+        if not MEASURE_FILE.exists():
+            fb="(measurement disabled — no RAPIDAPI_KEY)" if not RAPIDAPI_KEY else "(no records yet — waiting for a live listed match)"
+            return await i.followup.send(f"No measurement data. {fb}")
+        lines=MEASURE_FILE.read_text().splitlines()
+        recs=[]
+        for ln in lines[-400:]:
+            try:recs.append(json.loads(ln))
+            except:pass
+        recs=recs[-n:]
+        if not recs:return await i.followup.send("No measurement records parsed yet.")
+        out=[f"**EDGE MEASUREMENT** (last {len(recs)}) — model P1 vs market P1"]
+        for r in recs:
+            age=int((time.time()-float(r.get('ts',time.time())))/60)
+            fire="🎯" if (r.get("fire_p1") or r.get("fire_p2")) else ""
+            out.append(f"`{age}m` {r.get('match','?')[:34]} {str(r.get('score','')):14} "
+                f"model {r.get('model_p1',0)*100:.0f}% vs mkt {r.get('market_p1',0)*100:.0f}% "
+                f"(sum {r.get('market_sum',0)*100:.0f}%) {fire}")
+        await i.followup.send("\n".join(out)[:1950])
+    except Exception as e:
+        traceback.print_exc()
+        try:await i.followup.send(f"❌ /edge crashed: `{type(e).__name__}: {str(e)[:150]}`")
+        except:pass
+
+# ─── Stage-1 edge measurement: tennis model vs Polymarket price ──────────────
+# READ-ONLY and paper-only. Polls the tennis data feed for live matches, matches
+# each to its Polymarket market by player names, computes the model's live fair
+# value (anchored to the market's price at first sighting), and logs it next to
+# the market price. That log (MEASURE_FILE) is the Stage-1 evidence for whether
+# the market lags the live score. Never places an order. All decision logic lives
+# in the tested core.py; this is thin orchestration. Every failure is caught and
+# logged loudly — the measurement loop must never take down the trading bot.
+def fetch_live_events(api_key,timeout=20):
+    """(ok, [event dicts]) from the tennis feed. Never raises."""
+    if not api_key:return False,[]
+    try:
+        req=urllib.request.Request(FEED_LIVE_URL,headers={
+            "x-rapidapi-host":FEED_HOST,"x-rapidapi-key":api_key})
+        with urllib.request.urlopen(req,timeout=timeout) as resp:
+            data=json.loads(resp.read().decode("utf-8","replace"))
+        results=data.get("results",[]) if isinstance(data,dict) else []
+        return True,(results if isinstance(results,list) else [])
+    except Exception as e:
+        slog_event(logging.WARNING,"feed.fetch_error",err=repr(e)[:200]);return False,[]
+
+def gather_pm_markets():
+    """All open aec- markets for our leagues, as a list of market dicts."""
+    out={}
+    for lg in LEAGUES:
+        try:out.update(extract_aec_markets(search_events(lg)))
+        except Exception as e:slog_event(logging.WARNING,"measure.pm_fetch_error",lg=lg,err=repr(e)[:120])
+    return [m for m in out.values() if not m.get("closed")]
+
+def append_measurement(rec):
+    try:
+        with open(str(MEASURE_FILE),"a") as f:f.write(json.dumps(rec,default=str)+chr(10))
+    except Exception as e:
+        slog_event(logging.WARNING,"measure.write_error",err=repr(e)[:120])
+
+def evaluate_feed_match(e,markets):
+    """Thin wrapper over the tested core.build_measurement_record; stamps time
+    and never raises into the loop."""
+    try:
+        cfg={"min_edge":config.get("measure_min_edge",0.04),
+            "fee":config.get("sim_fee",0.0),"slippage":config.get("sim_slippage",0.0),
+            "sets_to_win":2}
+        rec=core.build_measurement_record(e,markets,MATCH_ANCHORS,cfg)
+    except Exception as ex:
+        slog_event(logging.WARNING,"measure.eval_error",err=repr(ex)[:150]);return None
+    if rec is not None:
+        rec["ts"]=round(time.time(),1)
+    return rec
+
+async def measurement_loop():
+    """Stage-1 evidence collector. Read-only, paper-only, additive."""
+    await bot.wait_until_ready()
+    await asyncio.sleep(10)
+    if not RAPIDAPI_KEY:
+        slog_event(logging.WARNING,"measure.disabled",
+            msg="no_RAPIDAPI_KEY_in_env__add_it_to_.env_to_enable_edge_measurement")
+        return
+    loop=asyncio.get_event_loop()
+    while not bot.is_closed():
+        try:
+            if not config.get("measure_enabled",True):
+                await asyncio.sleep(30);continue
+            ok,events=await loop.run_in_executor(None,fetch_live_events,RAPIDAPI_KEY)
+            live=[e for e in (events or [])
+                  if str(e.get("status",""))=="InPlay"
+                  and str(e.get("tourType","")).lower() in ("atp","wta")]
+            markets=await loop.run_in_executor(None,gather_pm_markets)
+            matched=0;fires=0
+            for e in live:
+                rec=evaluate_feed_match(e,markets)
+                if rec:
+                    matched+=1
+                    if rec.get("fire_p1") or rec.get("fire_p2"):fires+=1
+                    append_measurement(rec)
+            slog_event(logging.INFO,"measure.tick",feed_live=len(live),
+                pm_markets=len(markets),matched=matched,would_fire=fires)
+            if live and markets and matched==0:
+                slog_event(logging.WARNING,"measure.NO_OVERLAP",feed_live=len(live),
+                    pm_markets=len(markets),
+                    msg="live_matches_and_pm_markets_exist_but_none_matched__check_name_matching")
+        except Exception as ex:
+            slog_event(logging.ERROR,"measure.error",err=repr(ex)[:200])
+        await asyncio.sleep(max(20,float(config.get("measure_interval",45))))
+
 # ─── v16.13: background loops ────────────────────────────────
 async def discovery_loop():
     """Every N seconds, rediscover top 10 and update WS subscriptions."""
@@ -1561,6 +1693,7 @@ async def on_ready():
     bot.loop.create_task(resolve_loop())
     bot.loop.create_task(watchdog_loop())
     bot.loop.create_task(reconcile_loop())
+    bot.loop.create_task(measurement_loop())   # Stage-1 edge measurement (read-only)
     ch=bot.get_channel(ALERTS)
     # v16.15: startup reconciliation. Ask the exchange what we actually hold.
     # If there are positions with no local record (the orphaned-position case

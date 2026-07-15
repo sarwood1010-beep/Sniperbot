@@ -446,23 +446,36 @@ _START_STATE = {"sets_p1": 0, "sets_p2": 0, "games_p1": 0, "games_p2": 0,
                 "pts_p1": 0, "pts_p2": 0, "server": 1, "in_tiebreak": False}
 
 
-def implied_serve_priors(target_p1_matchup_prob, tour="atp", sets_to_win=2):
-    """Return (p1_serve, p2_serve) such that the model's pre-match win prob for
-    player 1 equals target_p1_matchup_prob. Fixes the average serve level at the
-    tour baseline and solves for the gap by bisection (live_match_win_prob is
-    monotonic in the gap)."""
-    base = TOUR_BASE_SERVE.get(tour, 0.63)
-    target = max(0.001, min(0.999, target_p1_matchup_prob))
-    span = min(base - 0.02, 0.98 - base)      # keep both serves in (0.02, 0.98)
+def _solve_serve_gap(target, state, base, sets_to_win):
+    """Bisection for the serve gap d so that live_match_win_prob(base+d, base-d,
+    state) == target. Monotonic in d, so bisection is exact to ~1e-9."""
+    target = max(0.001, min(0.999, target))
+    span = min(base - 0.02, 0.98 - base)          # keep both serves in (0.02, 0.98)
     lo, hi = -span, span
     for _ in range(40):
         d = (lo + hi) / 2.0
-        p = live_match_win_prob(base + d, base - d, _START_STATE, sets_to_win)
+        p = live_match_win_prob(base + d, base - d, state, sets_to_win)
         if p < target:
             lo = d
         else:
             hi = d
-    d = (lo + hi) / 2.0
+    return (lo + hi) / 2.0
+
+
+def implied_serve_priors(target_p1_matchup_prob, tour="atp", sets_to_win=2):
+    """(p1_serve, p2_serve) reproducing target as the PRE-MATCH (0-0) win prob."""
+    base = TOUR_BASE_SERVE.get(tour, 0.63)
+    d = _solve_serve_gap(target_p1_matchup_prob, _START_STATE, base, sets_to_win)
+    return base + d, base - d
+
+
+def implied_serve_priors_at_state(target_p1_prob, state, tour="atp", sets_to_win=2):
+    """(p1_serve, p2_serve) such that the model reproduces target at the GIVEN
+    live state. Used to anchor to the market's price at first sighting even if the
+    match is already in progress, then hold the priors fixed and watch the model
+    diverge from the market as the score evolves."""
+    base = TOUR_BASE_SERVE.get(tour, 0.63)
+    d = _solve_serve_gap(target_p1_prob, state, base, sets_to_win)
     return base + d, base - d
 
 
@@ -580,3 +593,75 @@ def match_market_to_feed(feed_p1, feed_p2, side_a, side_b):
     if straight >= cross:
         return {"p1_side": side_a, "p2_side": side_b}
     return {"p1_side": side_b, "p2_side": side_a}
+
+
+# ─── measurement record: the whole model-vs-market pipeline, pure ────────────
+def build_measurement_record(event, markets, anchors, cfg):
+    """Match one live feed event to a Polymarket market, anchor the model to the
+    market's price at first sighting (cached in `anchors`), compute the live fair
+    value, compare to the market price, and return a record dict — or None if the
+    event is unparseable or no market matches.
+
+    event: feed dict (participant1/2, tourType, score, points, indicator).
+    markets: list of Polymarket market dicts (each has 'prices' {side_name: price}
+             and optionally 'market_slug').
+    anchors: dict mutated in place to cache {key: {'priors':(p1s,p2s),
+             'anchor_prob':x}} so priors are fixed after first sighting.
+    cfg: {'min_edge','fee','slippage','sets_to_win'} (all optional).
+    Pure (no I/O, no clock) — the caller stamps time and writes the log."""
+    p1 = event.get("participant1")
+    p2 = event.get("participant2")
+    if not p1 or not p2:
+        return None
+    tour = str(event.get("tourType", "atp")).lower()
+    st = parse_live_score(event.get("score", ""), event.get("points", ""),
+                          event.get("indicator", ""))
+    if st is None:
+        return None
+    market = mapping = None
+    for m in markets:
+        prices = m.get("prices", {}) or {}
+        keys = list(prices.keys())
+        if len(keys) != 2:
+            continue
+        mp = match_market_to_feed(p1, p2, keys[0], keys[1])
+        if mp:
+            market, mapping = m, mp
+            break
+    if not market:
+        return None
+    prices = market.get("prices", {}) or {}
+    try:
+        market_p1 = float(prices.get(mapping["p1_side"], 0) or 0)
+        market_p2 = float(prices.get(mapping["p2_side"], 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    key = market.get("market_slug") or (p1 + "|" + p2)
+    sets_to_win = int(cfg.get("sets_to_win", 2))
+    anc = anchors.get(key)
+    if not anc:
+        anchor_prob = market_p1 if 0.0 < market_p1 < 1.0 else 0.5
+        anc = {"priors": implied_serve_priors_at_state(anchor_prob, st, tour, sets_to_win),
+               "anchor_prob": anchor_prob}
+        anchors[key] = anc
+    p1s, p2s = anc["priors"]
+    model_p1 = live_match_win_prob(p1s, p2s, st, sets_to_win)
+    if model_p1 is None:
+        return None
+    min_edge = float(cfg.get("min_edge", 0.04))
+    fee = float(cfg.get("fee", 0.0))
+    slip = float(cfg.get("slippage", 0.0))
+    # one price per side (no separate bid/ask yet) -> logs RAW model-vs-market
+    # divergence; spread cost is applied later from live WS best_bid/best_ask.
+    eg1 = edge_signal(model_p1, market_p1, market_p1, min_edge, slip, fee)
+    eg2 = edge_signal(1.0 - model_p1, market_p2, market_p2, min_edge, slip, fee)
+    return {"match": p1 + " vs " + p2, "tour": tour,
+            "slug": market.get("market_slug"), "score": event.get("score"),
+            "points": event.get("points"), "indicator": event.get("indicator"),
+            "model_p1": round(model_p1, 4), "market_p1": round(market_p1, 4),
+            "market_p2": round(market_p2, 4),
+            "market_sum": round(market_p1 + market_p2, 4),
+            "anchor_prob": round(anc["anchor_prob"], 4),
+            "edge_p1": (round(eg1["edge"], 4) if eg1["edge"] is not None else None),
+            "edge_p2": (round(eg2["edge"], 4) if eg2["edge"] is not None else None),
+            "fire_p1": bool(eg1["fire"]), "fire_p2": bool(eg2["fire"])}

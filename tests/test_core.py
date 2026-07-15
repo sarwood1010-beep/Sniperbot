@@ -374,6 +374,13 @@ class ImpliedServePriors(unittest.TestCase):
         # WTA baseline serve level is lower than ATP (fewer service points held)
         self.assertLess(core.TOUR_BASE_SERVE["wta"], core.TOUR_BASE_SERVE["atp"])
 
+    def test_anchor_at_midmatch_state_reproduces_target(self):
+        # anchoring mid-match: priors solved at a live state reproduce the target
+        # AT that state (so model == market at first sighting, by construction).
+        st = core.parse_live_score("6-4,3-2", "30-15", "1,0")
+        p1s, p2s = core.implied_serve_priors_at_state(0.70, st, "atp")
+        self.assertAlmostEqual(core.live_match_win_prob(p1s, p2s, st), 0.70, places=3)
+
     def test_priors_then_live_update_moves_with_score(self):
         # anchor to a 50/50 opening, then a break in set 1 should push P1 well
         # above 50% -> demonstrates the model reacting to the live score.
@@ -485,6 +492,53 @@ class NameMatching(unittest.TestCase):
         self.assertIsNone(core.match_market_to_feed(
             "Roger Federer", "Rafael Nadal",
             "Tiago Pereira", "Alejo Sanchez Quilez"))
+
+
+class MeasurementPipeline(unittest.TestCase):
+    """End-to-end (pure) test of the integration logic, with synthetic feed +
+    market data shaped like the real APIs — the validation the live loop can't
+    get locally."""
+
+    def _market(self, s1, p1, s2, p2, slug="aec-atp-x-2026-07-15"):
+        return {"market_slug": slug, "prices": {s1: p1, s2: p2}, "closed": False}
+
+    def test_matches_and_builds_record_anchored(self):
+        event = {"participant1": "Stefanos Tsitsipas", "participant2": "Jerome Kym",
+                 "tourType": "atp", "status": "InPlay",
+                 "score": "6-4,3-2", "points": "30-15", "indicator": "1,0"}
+        markets = [self._market("Stefanos Tsitsipas", 0.70, "Jerome Kym", 0.30)]
+        anchors = {}
+        rec = core.build_measurement_record(event, markets, anchors, {"min_edge": 0.04})
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec["slug"], "aec-atp-x-2026-07-15")
+        # anchored to the market's 0.70 at this exact state -> model == market now
+        self.assertAlmostEqual(rec["model_p1"], 0.70, places=2)
+        self.assertAlmostEqual(rec["market_p1"], 0.70, places=6)
+        self.assertTrue(anchors)  # anchor cached for the match
+
+    def test_unmatched_event_returns_none(self):
+        event = {"participant1": "Roger Federer", "participant2": "Rafael Nadal",
+                 "tourType": "atp", "score": "0-0", "points": "0-0", "indicator": "1,0"}
+        markets = [self._market("Tiago Pereira", 0.5, "Alejo Sanchez Quilez", 0.5)]
+        self.assertIsNone(core.build_measurement_record(event, markets, {}, {}))
+
+    def test_edge_appears_when_market_lags_the_score(self):
+        # The whole thesis in one test: anchor at a 50/50 opening, then the score
+        # moves hard for P1 while the market price stays stale -> the model
+        # diverges above the market and a positive edge on P1 appears.
+        markets = [self._market("Anna Alpha", 0.50, "Carla Charlie", 0.50)]
+        anchors = {}
+        e0 = {"participant1": "Anna Alpha", "participant2": "Carla Charlie",
+              "tourType": "wta", "score": "0-0", "points": "0-0", "indicator": "1,0"}
+        r0 = core.build_measurement_record(e0, markets, anchors, {"min_edge": 0.04})
+        self.assertAlmostEqual(r0["model_p1"], 0.50, places=2)   # agrees at anchor
+        # P1 now up a double break in set 1; market price unchanged (stale)
+        e1 = {"participant1": "Anna Alpha", "participant2": "Carla Charlie",
+              "tourType": "wta", "score": "4-0", "points": "0-0", "indicator": "1,0"}
+        r1 = core.build_measurement_record(e1, markets, anchors, {"min_edge": 0.04})
+        self.assertGreater(r1["model_p1"], 0.65)                 # model moved up
+        self.assertGreater(r1["edge_p1"], 0.0)                   # model > stale market
+        self.assertTrue(r1["fire_p1"])                           # tradeable divergence
 
 
 if __name__ == "__main__":
