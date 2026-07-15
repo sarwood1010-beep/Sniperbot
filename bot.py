@@ -6,6 +6,7 @@ from polymarket_us import PolymarketUS
 from pathlib import Path
 import websockets
 from cryptography.hazmat.primitives.asymmetric import ed25519
+import core  # pure, unit-tested decision logic (single source of truth)
 
 load_dotenv()
 def find_env(names):
@@ -169,31 +170,18 @@ def search_events(q):
     return []
 
 def is_future_market(slug,title=""):
-    kw=["champion","mvp","trophy","winner","award","champ","pennant","rookie","cy-young","allstar","series-price"]
-    return any(k in (slug+" "+title).lower() for k in kw)
+    return core.is_future_market(slug,title)
 
 def slug_date_str(slug):
-    """Extract YYYY-MM-DD substring from a slug, or empty string if none found."""
-    import re as _re
-    m=_re.search(r"(\d{4}-\d{2}-\d{2})",slug or "")
-    return m.group(1) if m else ""
+    return core.slug_date_str(slug)
 
 def is_today_slug(slug):
-    """v16.13: configurable today-only check.
-    Default accepts today + yesterday (UTC) to cover late evening games slugged
-    in yesterday's UTC date. Excludes anything dated forward of today unless
-    date_window_forward_days is increased.
-    Trusts the slug date — fail-closed if no date can be parsed."""
-    sd=slug_date_str(slug)
-    if not sd:return False
-    try:
-        slug_date=datetime.strptime(sd,"%Y-%m-%d").date()
-    except:return False
+    """Configurable today-only check (delegates to core). 'today' is computed in
+    UTC here; the window comes from config. Fail-closed if no date parses."""
     today=datetime.now(timezone.utc).date()
     back=int(config.get("date_window_back_days",1))
     fwd=int(config.get("date_window_forward_days",0))
-    delta=(slug_date-today).days
-    return -back<=delta<=fwd
+    return core.is_today_slug(slug,today,back,fwd)
 
 def extract_aec_markets(events):
     markets={}
@@ -312,10 +300,7 @@ def get_side_intent(side_name,sides_info):
     return True
 
 def safe_quantity(price,max_dollars):
-    if price<=0 or price>1:return 0
-    q=math.floor(max_dollars/price)
-    while q>0 and q*price>max_dollars:q-=1
-    return max(0,q)
+    return core.safe_quantity(price,max_dollars)
 
 def place_order(slug,side_name,price,dollar_amount,sides_info):
     dollar_amount=min(dollar_amount,config["max_bet_usd"])
@@ -362,10 +347,26 @@ def place_sell(slug,side_name,price,qty,sides_info):
             "price":{"value":str(round(price,3)),"currency":"USD"},
             "quantity":int(max(1,qty)),"tif":"TIME_IN_FORCE_FILL_OR_KILL"})
         if not order:return None
-        if not order.get("executions",[]):
-            print(f"Sell KILLED: {slug}");return None
+        # R1 FIX: orders are IOC and `executions` is ALWAYS empty — the old check
+        # treated EVERY sell as killed, so live exits never recorded and every
+        # tick re-fired a fresh sell order (unbounded real-money spam). Detect
+        # fills the same way place_order does: retrieve the order and read
+        # cumQuantity (shares actually filled). >0 == filled (handles partials).
+        oid=order.get("id")
+        filled_qty=0.0
+        try:
+            import time as _t;_t.sleep(1)
+            _r=pm.orders.retrieve(oid)
+            _o=_r.get("order",_r) if isinstance(_r,dict) else {}
+            filled_qty=float(_o.get("cumQuantity",0) or 0)
+            print(f"[sell-fill-check] {slug} state={_o.get('state')} cum={filled_qty}")
+        except Exception as _fe:
+            print(f"[sell-fill-check] retrieve failed {oid}: {_fe}")
+        if filled_qty<=0:
+            print(f"Sell KILLED (no fill): {slug}");return None
         return order
-    except:return None
+    except Exception as e:
+        print(f"Sell error: {e}");return None
 
 def cancel_all_orders():
     try:pm.orders.cancel_all();return True
@@ -387,8 +388,7 @@ def count_all_open():return sum(1 for t in load_data()["trades"] if t.get("statu
 def has_open_on_slug(slug):
     return any(t["slug"]==slug and t.get("status")=="open" for t in load_data()["trades"])
 def edge_ok(price,edge):
-    if price<config["min_entry_price"] or price>config["max_entry_price"]:return False
-    return edge>=config["min_edge"]
+    return core.edge_ok(price,edge,config["min_entry_price"],config["max_entry_price"],config["min_edge"])
 
 def open_trade(slug,side,mp,mkt_price,lg,q,reason="",sides_info=None):
     if has_open_on_slug(slug):return None
@@ -461,11 +461,9 @@ def check_exits(slug,cur):
         c=cur.get(t["side"])
         if c is None:continue
         e=t["entry_price"];hw=t.get("high_water",e)
-        if c>hw:t["high_water"]=c;hw=c
-        g=c-e
-        if g>=config["take_profit"]:exits.append((t["id"],c,"take-profit"))
-        elif g<=-config["stop_loss"]:exits.append((t["id"],c,"stop-loss"))
-        elif hw>e+0.03 and c<=hw-config["trail_stop"]:exits.append((t["id"],c,"trail-stop"))
+        reason,new_hw=core.evaluate_exit(e,hw,c,config["take_profit"],config["stop_loss"],config["trail_stop"])
+        if new_hw>hw:t["high_water"]=new_hw
+        if reason:exits.append((t["id"],c,reason))
     if exits:save_data(data)
     return exits
 
@@ -1452,22 +1450,15 @@ async def resolve_loop():
             settled={}
             closed_manual={}
             for a in res:
-                typ=a.get("type")
-                if typ=="ACTIVITY_TYPE_POSITION_RESOLUTION":
-                    pr=a.get("positionResolution") or {}
-                    slug=pr.get("marketSlug")
-                    if not slug or slug in settled:continue
-                    raw=((pr.get("afterPosition") or {}).get("realized") or {}).get("value")
-                    try:settled[slug]=float(raw)
-                    except (TypeError,ValueError):settled[slug]=0.0
-                elif typ=="ACTIVITY_TYPE_TRADE":
-                    tr=a.get("trade") or {}
-                    slug=tr.get("marketSlug")
-                    if not slug or slug in closed_manual:continue
-                    rp=(tr.get("realizedPnl") or {}).get("value")
-                    try:rp=float(rp)
-                    except (TypeError,ValueError):rp=0.0
-                    if abs(rp)>=0.005:closed_manual[slug]=rp
+                pr=core.parse_position_resolution(a)
+                if pr:
+                    slug,pnl=pr
+                    if slug not in settled:settled[slug]=pnl
+                    continue
+                tc=core.parse_trade_close(a)
+                if tc:
+                    slug,pnl=tc
+                    if slug not in closed_manual:closed_manual[slug]=pnl
             d=load_data()
             for t in [x for x in d["trades"] if x.get("status")=="open"]:
                 slug=t["slug"]
@@ -1584,4 +1575,7 @@ async def on_ready():
         msg+=f"\nSnapshots: {len(snaps)}"
         await ch.send(msg)
 
-bot.run(TOKEN)
+# __main__ guard so bot.py can be imported (for tests / tooling) without
+# starting the Discord client and hitting the network.
+if __name__=="__main__":
+    bot.run(TOKEN)
