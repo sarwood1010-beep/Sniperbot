@@ -17,6 +17,7 @@ test; the whole point is that behavior changes are visible.
 """
 import re
 import math
+import unicodedata
 from datetime import datetime
 from functools import lru_cache
 
@@ -500,3 +501,54 @@ def round_trip_cost(best_bid, best_ask, slippage=0.0, fee=0.0):
     if not (buy_ok and sell_ok):
         return None
     return buy_px - sell_px
+
+
+# ─── edge decision: model fair value vs market price, after costs ────────────
+def edge_signal(fair_prob, best_bid, best_ask, min_edge, slippage=0.0, fee=0.0):
+    """Decide whether BUYING this side is worth it. In a binary market a winning
+    share pays $1, so the fair value of a share == fair_prob (the model's win
+    probability for this side). We fire only if fair value exceeds the harsh BUY
+    price (ask + fee + slippage) by at least min_edge. Returns a dict:
+      fire (bool), edge (fair_prob - buy_price), buy_price, reason.
+    Pure — the caller supplies fair_prob from the model and bid/ask from the book,
+    and applies this to each side of the match."""
+    ok, buy_px = simulate_fill("buy", best_bid, best_ask, slippage, fee)
+    if not ok or buy_px is None:
+        return {"fire": False, "edge": None, "buy_price": None, "reason": "no_fill"}
+    edge = fair_prob - buy_px
+    if not (0.0 < buy_px < 1.0):
+        return {"fire": False, "edge": edge, "buy_price": buy_px,
+                "reason": "price_out_of_range"}
+    fire = edge >= min_edge
+    return {"fire": fire, "edge": edge, "buy_price": buy_px,
+            "reason": "edge" if fire else "insufficient_edge"}
+
+
+# ─── player-name helpers (feed <-> Polymarket matching) ──────────────────────
+def normalize_name(name):
+    """Lowercase, strip accents and punctuation, collapse whitespace — so
+    'Stéfanos Tsitsipás' and 'Stefanos Tsitsipas' compare equal."""
+    n = unicodedata.normalize("NFKD", str(name))
+    n = "".join(c for c in n if not unicodedata.combining(c))
+    n = re.sub(r"[^a-z0-9 ]", " ", n.lower())
+    return re.sub(r"\s+", " ", n).strip()
+
+
+def name_tokens(name):
+    """Set of normalized word tokens in a name."""
+    return set(t for t in normalize_name(name).split() if t)
+
+
+def last_name(name):
+    """Best-guess surname: the last normalized token (empty string if none)."""
+    toks = normalize_name(name).split()
+    return toks[-1] if toks else ""
+
+
+def both_players_present(feed_p1, feed_p2, market_text):
+    """True if both players' surnames appear as tokens in market_text (a
+    Polymarket title / side descriptions, order-independent). A first-pass
+    matcher; refined once we see the real market format."""
+    toks = name_tokens(market_text)
+    ln1, ln2 = last_name(feed_p1), last_name(feed_p2)
+    return bool(ln1) and bool(ln2) and ln1 in toks and ln2 in toks

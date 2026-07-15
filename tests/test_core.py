@@ -416,5 +416,48 @@ class HarshFillSim(unittest.TestCase):
         self.assertAlmostEqual(c, (0.52 * 1.01 + 0.01) - (0.48 * 0.99 - 0.01))
 
 
+class EdgeSignal(unittest.TestCase):
+    def test_fires_when_underpriced_beyond_min_edge(self):
+        # model says 0.70 fair, market ask 0.60 -> buy 0.60, edge 0.10
+        r = core.edge_signal(0.70, 0.58, 0.60, min_edge=0.05)
+        self.assertTrue(r["fire"])
+        self.assertAlmostEqual(r["edge"], 0.10)
+        self.assertAlmostEqual(r["buy_price"], 0.60)
+
+    def test_no_fire_when_edge_too_small(self):
+        r = core.edge_signal(0.70, 0.66, 0.68, min_edge=0.05)  # edge 0.02
+        self.assertFalse(r["fire"])
+        self.assertEqual(r["reason"], "insufficient_edge")
+
+    def test_costs_eat_the_edge(self):
+        # raw edge 0.10, but fee+slippage push the buy price up past the hurdle
+        r = core.edge_signal(0.70, 0.58, 0.60, min_edge=0.08, slippage=0.02, fee=0.02)
+        self.assertFalse(r["fire"])
+
+    def test_no_book_no_fire(self):
+        r = core.edge_signal(0.70, None, None, min_edge=0.05)
+        self.assertFalse(r["fire"])
+        self.assertEqual(r["reason"], "no_fill")
+
+
+class NameMatching(unittest.TestCase):
+    def test_normalize_strips_accents_and_case(self):
+        self.assertEqual(core.normalize_name("Stéfanos Tsitsipás"), "stefanos tsitsipas")
+
+    def test_last_name(self):
+        self.assertEqual(core.last_name("Carlos Alcaraz"), "alcaraz")
+        self.assertEqual(core.last_name(""), "")
+
+    def test_both_players_present_order_independent(self):
+        self.assertTrue(core.both_players_present(
+            "Stefanos Tsitsipas", "Jerome Kym", "Kym vs Tsitsipas — ATP"))
+        self.assertTrue(core.both_players_present(
+            "Jerome Kym", "Stefanos Tsitsipas", "Tsitsipas vs Kym"))
+
+    def test_both_players_absent_when_one_missing(self):
+        self.assertFalse(core.both_players_present(
+            "Stefanos Tsitsipas", "Jerome Kym", "Tsitsipas vs Alcaraz"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
