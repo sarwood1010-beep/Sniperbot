@@ -7,6 +7,21 @@ from pathlib import Path
 import websockets
 from cryptography.hazmat.primitives.asymmetric import ed25519
 import core  # pure, unit-tested decision logic (single source of truth)
+import logging
+
+# ─── Structured logging ──────────────────────────────────────────────────────
+# The three historical bugs (dead settlement loop, over-filtered discovery,
+# unreachable trail) were all SILENT: empty output produced no log line. The
+# rule here: a loop that produces nothing, or a filter that drops everything,
+# must emit a WARNING the same day — not be discovered weeks later via /stats.
+logging.basicConfig(level=logging.INFO,
+    format="%(asctime)s %(levelname)s sharp %(message)s")
+slog=logging.getLogger("sharp")
+
+def slog_event(level,event,**kv):
+    """One machine-greppable line: `EVENT key=val key=val`."""
+    parts=" ".join(f"{k}={v}" for k,v in kv.items())
+    slog.log(level,f"{event} {parts}".rstrip())
 
 load_dotenv()
 def find_env(names):
@@ -1435,8 +1450,13 @@ async def discovery_loop():
                         "title":g["title"],"time":datetime.now(timezone.utc).isoformat(),
                         "sides_info":g["sides_info"]}
             save_snaps(snaps)
-            print(f"[disc] top {len(games)} subscribed")
-        except Exception as e:print(f"[disc] err: {e}")
+            n=len(games)
+            slog_event(logging.INFO,"discovery.tick",subscribed=n)
+            if n==0:
+                slog_event(logging.WARNING,"discovery.EMPTY",
+                    msg="0_games_passed_filters_bot_is_blind_check_date_window_search_filters")
+        except Exception as e:
+            slog_event(logging.ERROR,"discovery.error",err=repr(e))
         await asyncio.sleep(config["discovery_interval"])
 
 async def resolve_loop():
@@ -1460,7 +1480,9 @@ async def resolve_loop():
                     slug,pnl=tc
                     if slug not in closed_manual:closed_manual[slug]=pnl
             d=load_data()
-            for t in [x for x in d["trades"] if x.get("status")=="open"]:
+            open_before=[x for x in d["trades"] if x.get("status")=="open"]
+            resolved_this=0
+            for t in open_before:
                 slug=t["slug"]
                 if slug in settled:
                     pnl=settled[slug]
@@ -1470,6 +1492,7 @@ async def resolve_loop():
                     continue
                 won=True if pnl>0.005 else (False if pnl<-0.005 else None)
                 result=resolve_at_expiry(t["id"],won,pnl)
+                if result:resolved_this+=1
                 if result and ch:
                     tag="LIVE" if t.get("live") else "PAPER"
                     embed=discord.Embed(title=f"{'WON' if won else 'LOST'} [{tag}]",color=0x10B981 if won else 0xEF4444)
@@ -1479,7 +1502,15 @@ async def resolve_loop():
                     embed.set_footer(text=f"${pnl2:+.2f} | {w}W-{l}L")
                     await ch.send(embed=embed)
                 await asyncio.sleep(2)
-        except Exception as e:print(f"Resolve err: {e}")
+            slog_event(logging.INFO,"resolve.tick",activities=len(res),
+                settled=len(settled),closed=len(closed_manual),
+                open_before=len(open_before),resolved=resolved_this)
+            # bug #1 shape: open trades exist but the scan matched nothing.
+            if open_before and (len(settled)+len(closed_manual))==0:
+                slog_event(logging.WARNING,"resolve.NO_MATCHES",open=len(open_before),
+                    msg="open_trades_but_0_settlements_seen_settlement_may_be_silently_dead")
+        except Exception as e:
+            slog_event(logging.ERROR,"resolve.error",err=repr(e))
         await asyncio.sleep(config["resolve_interval"])
 
 async def watchdog_loop():
