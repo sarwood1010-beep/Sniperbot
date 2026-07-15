@@ -228,5 +228,36 @@ class ReconcilePosSize(unittest.TestCase):
         self.assertEqual(size, 5.0)
 
 
+class TennisModelGameLevel(unittest.TestCase):
+    def test_symmetric_point_gives_even_game(self):
+        self.assertAlmostEqual(core.game_win_prob(0.5), 0.5, places=6)
+
+    def test_deuce_symmetric(self):
+        self.assertAlmostEqual(core.game_win_prob(0.5, 3, 3), 0.5, places=6)
+
+    def test_known_hold_percentages(self):
+        # Standard reference values: a server winning 60% of points holds ~73.6%
+        # of games; at 70% it is ~90.1%. These pin the model to known results.
+        self.assertAlmostEqual(core.hold_prob(0.60), 0.7357, places=3)
+        self.assertAlmostEqual(core.hold_prob(0.70), 0.9008, places=3)
+
+    def test_monotonic_in_serve_strength(self):
+        self.assertLess(core.hold_prob(0.55), core.hold_prob(0.65))
+
+    def test_extremes(self):
+        self.assertEqual(core.game_win_prob(0.0), 0.0)
+        self.assertEqual(core.game_win_prob(1.0), 1.0)
+
+    def test_advantage_ordering(self):
+        # advantage-server > deuce > advantage-returner
+        p = 0.6
+        self.assertGreater(core.game_win_prob(p, 4, 3), core.game_win_prob(p, 3, 3))
+        self.assertGreater(core.game_win_prob(p, 3, 3), core.game_win_prob(p, 3, 4))
+
+    def test_being_ahead_helps(self):
+        # 40-15 (3,1) is a stronger position than 15-40 (1,3)
+        self.assertGreater(core.game_win_prob(0.6, 3, 1), core.game_win_prob(0.6, 1, 3))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -236,3 +236,58 @@ def pos_size_safe(p):
     if p and not any(k in p for k in _POS_SIZE_KEYS):
         return 0.0, False
     return 0.0, True
+
+
+# ─── tennis win-probability model (the "fair value" brain) ───────────────────
+# Point -> game -> set -> match, all derived from ONE input per player: their
+# probability of winning a single point ON SERVE. Tennis is unusually modelable
+# because a small per-point serve edge compounds into a large game/set/match
+# edge, and the current score fully determines the situation. This is the
+# standard hierarchical model (cf. O'Malley 2008 / Barnett & Clarke). Pure and
+# stdlib-only like the rest of core; the live score that drives it will come
+# from the tennis data feed. Built bottom-up: game level first (this commit),
+# set and match to follow.
+
+def _deuce_win(p):
+    """Probability the server eventually wins from deuce, given per-point win
+    probability p. Closed form for the infinite deuce/advantage sequence."""
+    q = 1.0 - p
+    denom = p * p + q * q
+    if denom == 0:
+        return 0.0
+    return p * p / denom
+
+
+def game_win_prob(p, a=0, b=0):
+    """Probability the SERVER wins the current game.
+
+    p = server's probability of winning a single point.
+    a = points the server has (0,1,2,3 = 0/15/30/40, higher = advantage).
+    b = points the returner has.
+    Deuce (both >=3, i.e. 40-40) is resolved in closed form; other scores
+    recurse one point forward. Returns a probability in [0, 1].
+    """
+    if p <= 0:
+        return 0.0
+    if p >= 1:
+        return 1.0
+    # terminal: someone reached >=4 points with a >=2 margin
+    if a >= 4 and a - b >= 2:
+        return 1.0
+    if b >= 4 and b - a >= 2:
+        return 0.0
+    # deuce / advantage region (both players at 40 or beyond)
+    if a >= 3 and b >= 3:
+        d = _deuce_win(p)
+        if a == b:
+            return d                 # deuce
+        if a > b:
+            return p + (1.0 - p) * d  # advantage server
+        return p * d                  # advantage returner
+    # otherwise play one more point and recurse
+    return p * game_win_prob(p, a + 1, b) + (1.0 - p) * game_win_prob(p, a, b + 1)
+
+
+def hold_prob(p):
+    """Probability of holding serve from love-all (game_win_prob at 0-0)."""
+    return game_win_prob(p, 0, 0)
