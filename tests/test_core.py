@@ -259,5 +259,37 @@ class TennisModelGameLevel(unittest.TestCase):
         self.assertGreater(core.game_win_prob(0.6, 3, 1), core.game_win_prob(0.6, 1, 3))
 
 
+class TennisModelSetMatch(unittest.TestCase):
+    def test_tiebreak_symmetric_near_even(self):
+        self.assertAlmostEqual(core.tiebreak_win_prob(0.6, 0.6), 0.5, places=2)
+
+    def test_tiebreak_stronger_player_favored(self):
+        self.assertGreater(core.tiebreak_win_prob(0.70, 0.55), 0.5)
+
+    def test_set_symmetric_near_even(self):
+        # equal players -> set is close to a coin flip (tiny serve-first edge)
+        self.assertAlmostEqual(core.set_win_prob(0.6, 0.6), 0.5, places=1)
+
+    def test_set_stronger_server_favored(self):
+        self.assertGreater(core.set_win_prob(0.70, 0.55), 0.6)
+
+    def test_set_lead_is_strong(self):
+        self.assertGreater(core.set_win_prob(0.6, 0.6, 5, 0), 0.95)   # 5-0 up
+        self.assertLess(core.set_win_prob(0.6, 0.6, 0, 5), 0.05)      # 0-5 down
+
+    def test_match_from_sets_exact_values(self):
+        # p_set=0.5 -> 0.5; best-of-3 closed form p^2(3-2p): p=0.6 -> 0.648
+        self.assertAlmostEqual(core.match_win_prob_from_sets(0.5), 0.5, places=6)
+        self.assertAlmostEqual(core.match_win_prob_from_sets(0.6), 0.648, places=6)
+
+    def test_match_from_sets_one_set_up(self):
+        # A needs 1 set, B needs 2: p + (1-p)*p = p(2-p); p=0.6 -> 0.84
+        self.assertAlmostEqual(core.match_win_prob_from_sets(0.6, 1, 0), 0.84, places=6)
+
+    def test_match_best_of_five_needs_three(self):
+        self.assertEqual(core.match_win_prob_from_sets(0.6, 2, 0, sets_to_win=3) < 1.0, True)
+        self.assertEqual(core.match_win_prob_from_sets(0.6, 3, 0, sets_to_win=3), 1.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

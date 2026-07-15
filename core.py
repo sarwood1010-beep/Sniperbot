@@ -291,3 +291,62 @@ def game_win_prob(p, a=0, b=0):
 def hold_prob(p):
     """Probability of holding serve from love-all (game_win_prob at 0-0)."""
     return game_win_prob(p, 0, 0)
+
+
+def _tiebreak_first_serves(i):
+    """In a tiebreak, does the player who served the FIRST point serve point i?
+    Serve order is X, Y,Y, X,X, Y,Y, X,X, ... (0-indexed point i)."""
+    if i == 0:
+        return True
+    return ((i - 1) // 2) % 2 == 1
+
+
+def tiebreak_win_prob(pa, pb, a=0, b=0, first_is_A=True):
+    """Probability player A wins a 7-point tiebreak from score a-b.
+    pa/pb = each player's point-win-on-serve probability. first_is_A = A served
+    the first point of the tiebreak. Serve rotation is modeled exactly; the
+    >=6-6 deuce is collapsed with a 2-point-block closed form (each player serves
+    one of the next two points) to keep recursion shallow."""
+    if a >= 7 and a - b >= 2:
+        return 1.0
+    if b >= 7 and b - a >= 2:
+        return 0.0
+    if a >= 6 and b >= 6 and a == b:              # tiebreak deuce
+        num = pa * (1 - pb)
+        den = num + (1 - pa) * pb
+        return num / den if den > 0 else 0.5
+    i = a + b
+    a_serves = (_tiebreak_first_serves(i) == first_is_A)
+    win_pt = pa if a_serves else (1.0 - pb)       # prob A wins THIS point
+    return (win_pt * tiebreak_win_prob(pa, pb, a + 1, b, first_is_A)
+            + (1 - win_pt) * tiebreak_win_prob(pa, pb, a, b + 1, first_is_A))
+
+
+def set_win_prob(pa, pb, a=0, b=0, a_serves=True):
+    """Probability A wins the set from games score a-b, where a_serves = A serves
+    the NEXT (fresh) game. First to 6 games, win by 2, tiebreak at 6-6. Partial
+    games in progress are handled at the match level, not here."""
+    if a >= 6 and a - b >= 2:
+        return 1.0
+    if b >= 6 and b - a >= 2:
+        return 0.0
+    if a == 6 and b == 6:
+        return tiebreak_win_prob(pa, pb, 0, 0, first_is_A=a_serves)
+    if a_serves:
+        pA_game = game_win_prob(pa)               # A holds serve
+    else:
+        pA_game = 1.0 - game_win_prob(pb)         # A breaks (B fails to hold)
+    return (pA_game * set_win_prob(pa, pb, a + 1, b, not a_serves)
+            + (1 - pA_game) * set_win_prob(pa, pb, a, b + 1, not a_serves))
+
+
+def match_win_prob_from_sets(p_set, sets_a=0, sets_b=0, sets_to_win=2):
+    """Probability A wins the match given P(A wins one set)=p_set and the current
+    sets score. sets_to_win = 2 for best-of-3 (WTA/ATP non-slam), 3 for
+    best-of-5. Treats sets as independent — a standard simplification."""
+    if sets_a >= sets_to_win:
+        return 1.0
+    if sets_b >= sets_to_win:
+        return 0.0
+    return (p_set * match_win_prob_from_sets(p_set, sets_a + 1, sets_b, sets_to_win)
+            + (1 - p_set) * match_win_prob_from_sets(p_set, sets_a, sets_b + 1, sets_to_win))
