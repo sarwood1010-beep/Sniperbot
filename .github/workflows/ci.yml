@@ -1,0 +1,35 @@
+name: ci
+
+# Gate every push / PR before it can reach the droplet. Two checks, in the same
+# order the deploy script must enforce:
+#   1. py_compile  — the gate that has caught every bad hand-patch so far.
+#   2. pytest      — the core decision-logic suite (entry / exit / settlement).
+# py_compile only COMPILES (no imports execute), so bot.py is gated without
+# installing discord / polymarket_us / websockets. The tests import only core.py
+# (stdlib), so pytest needs nothing but pytest itself.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: py_compile (deploy gate)
+        run: |
+          python -m py_compile bot.py core.py
+          echo "py_compile OK"
+
+      - name: Install pytest
+        run: python -m pip install --quiet pytest
+
+      - name: Run test suite
+        run: python -m pytest -q

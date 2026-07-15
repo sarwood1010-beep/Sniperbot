@@ -1,0 +1,232 @@
+"""
+Characterization + spec tests for core.py.
+
+Two kinds of test live here:
+  * Characterization tests pin bot.py's CURRENT behavior so the extraction into
+    core.py (and the later rewire of bot.py to import it) is provably
+    behavior-preserving.
+  * expectedFailure ("BUG-N") tests encode DESIRED behavior that the current
+    code does NOT satisfy. They are red-on-purpose and become the fix targets;
+    when the fix lands, remove the decorator and they lock the fix in place.
+
+Runs under stdlib unittest (no pip) and under pytest (CI).
+"""
+import os
+import sys
+import unittest
+from datetime import date
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import core  # noqa: E402
+
+
+# Production-ish config mirrored from bot.py defaults, for realistic scenarios.
+PROD = dict(take_profit=0.08, stop_loss=0.08, trail_stop=0.04)
+
+
+class SlugAndDate(unittest.TestCase):
+    def test_slug_date_str_extracts(self):
+        self.assertEqual(core.slug_date_str("aec-atp-a-b-2026-07-14"), "2026-07-14")
+
+    def test_slug_date_str_none(self):
+        self.assertEqual(core.slug_date_str("aec-atp-no-date"), "")
+        self.assertEqual(core.slug_date_str(None), "")
+
+    def test_future_market_keywords(self):
+        self.assertTrue(core.is_future_market("aec-mlb-al-champion-2026"))
+        self.assertTrue(core.is_future_market("x", "AL MVP Award"))
+        self.assertFalse(core.is_future_market("aec-atp-a-b-2026-07-14", "A vs B"))
+
+    def test_today_and_yesterday_accepted_default_window(self):
+        today = date(2026, 7, 14)
+        self.assertTrue(core.is_today_slug("aec-atp-a-b-2026-07-14", today))   # today
+        self.assertTrue(core.is_today_slug("aec-atp-a-b-2026-07-13", today))   # yesterday, back=1
+
+    def test_tomorrow_rejected_with_default_forward_zero(self):
+        # bug #4 shape: a game whose slug is dated one UTC-day forward is filtered
+        # out entirely when date_window_forward_days == 0.
+        today = date(2026, 7, 14)
+        self.assertFalse(core.is_today_slug("aec-atp-a-b-2026-07-15", today))
+
+    def test_tomorrow_accepted_when_forward_one(self):
+        today = date(2026, 7, 14)
+        self.assertTrue(core.is_today_slug("aec-atp-a-b-2026-07-15", today, back=1, fwd=1))
+
+    def test_no_date_fails_closed(self):
+        self.assertFalse(core.is_today_slug("aec-atp-no-date", date(2026, 7, 14)))
+
+    def test_bad_date_fails_closed(self):
+        self.assertFalse(core.is_today_slug("aec-atp-2026-13-99", date(2026, 7, 14)))
+
+
+class Sizing(unittest.TestCase):
+    def test_safe_quantity_basic(self):
+        self.assertEqual(core.safe_quantity(0.50, 2.0), 4)
+
+    def test_safe_quantity_zero_shares_small_bet_high_price(self):
+        # R6: a $0.50 bet at price 0.80 floors to ZERO shares -> silent no-fill.
+        self.assertEqual(core.safe_quantity(0.80, 0.50), 0)
+
+    def test_safe_quantity_out_of_range(self):
+        self.assertEqual(core.safe_quantity(0.0, 2.0), 0)
+        self.assertEqual(core.safe_quantity(1.5, 2.0), 0)
+
+    def test_edge_ok(self):
+        self.assertTrue(core.edge_ok(0.50, 0.05, 0.20, 0.80, 0.04))
+        self.assertFalse(core.edge_ok(0.90, 0.05, 0.20, 0.80, 0.04))  # out of band
+        self.assertFalse(core.edge_ok(0.50, 0.02, 0.20, 0.80, 0.04))  # edge too small
+
+
+class DropDecision(unittest.TestCase):
+    BASE = dict(price=0.50, threshold=0.08, max_drop=0.20, in_cooldown=False,
+                quality_ok=True, min_entry=0.20, max_entry=0.80, has_open=False,
+                daily_limit_hit=False, revert_pct=0.50, min_edge=0.04)
+
+    def _d(self, **over):
+        args = dict(self.BASE); args.update(over)
+        return core.evaluate_drop_decision(**args)
+
+    def test_below_threshold_is_none(self):
+        self.assertIsNone(self._d(drop=0.05))
+
+    def test_fire(self):
+        self.assertEqual(self._d(drop=0.10), "FIRE")
+
+    def test_precedence_drop_too_large(self):
+        self.assertEqual(self._d(drop=0.25), "drop too large")
+
+    def test_precedence_cooldown_before_band(self):
+        self.assertEqual(self._d(drop=0.10, in_cooldown=True, price=0.90), "cooldown")
+
+    def test_dead_market(self):
+        self.assertEqual(self._d(drop=0.10, quality_ok=False), "dead market")
+
+    def test_band(self):
+        self.assertEqual(self._d(drop=0.10, price=0.90), "band")
+
+    def test_open_trade(self):
+        self.assertEqual(self._d(drop=0.10, has_open=True), "open trade")
+
+    def test_daily_limit(self):
+        self.assertEqual(self._d(drop=0.10, daily_limit_hit=True), "daily limit")
+
+    def test_edge_too_small(self):
+        # drop 0.08 * revert 0.5 = 0.04 edge == min_edge -> FIRE; just under -> edge
+        self.assertEqual(self._d(drop=0.08, min_edge=0.05), "edge")
+
+
+class ExitMatrix(unittest.TestCase):
+    ENTRY = 0.50
+    # NOTE (bug R17): bot.py compares raw floats at exact thresholds
+    # (g >= take_profit), and e.g. 0.58 - 0.50 == 0.0799...96 < 0.08, so an exit
+    # placed exactly ON the threshold fires one tick LATE. core.py mirrors that,
+    # so these tests deliberately use prices comfortably past the boundary. The
+    # R17 fix (round to cents / epsilon) will get its own boundary test.
+
+    def test_take_profit(self):
+        reason, px = core.run_exit_path(self.ENTRY, [0.54, 0.59], **PROD)
+        self.assertEqual(reason, "take-profit")
+        self.assertAlmostEqual(px, 0.59)   # g = +0.09, clearly past TP
+
+    def test_stop_loss(self):
+        reason, px = core.run_exit_path(self.ENTRY, [0.48, 0.44, 0.41], **PROD)
+        self.assertEqual(reason, "stop-loss")
+        self.assertAlmostEqual(px, 0.41)   # g = -0.09, clearly past SL
+
+    def test_no_exit_when_flat(self):
+        reason, px = core.run_exit_path(self.ENTRY, [0.51, 0.52, 0.505], **PROD)
+        self.assertIsNone(reason)
+
+    def test_trail_mechanism_fires_when_tp_does_not_preempt(self):
+        # The trail MECHANISM is sound: with a TP high enough not to preempt, a
+        # peak-then-giveback path exits via trail. (Proves the bug is policy, not
+        # a broken mechanism.)
+        reason, px = core.run_exit_path(
+            self.ENTRY, [0.55, 0.60, 0.55],
+            take_profit=0.20, stop_loss=0.20, trail_stop=0.04)
+        self.assertEqual(reason, "trail-stop")
+        self.assertAlmostEqual(px, 0.55)   # gave back 0.05 from the 0.60 peak
+
+    def test_trail_starved_by_production_take_profit(self):
+        # CHARACTERIZATION of bug #3: under production TP=0.08, a genuine runner
+        # that peaks at 0.65 (+0.15) is force-closed at take-profit on the way UP
+        # (here at 0.61) long before the trail can engage. The trail never sees
+        # the peak or the giveback.
+        reason, px = core.run_exit_path(
+            self.ENTRY, [0.55, 0.61, 0.65, 0.60], **PROD)
+        self.assertEqual(reason, "take-profit")
+        self.assertAlmostEqual(px, 0.61)   # exits climbing, never reaches 0.65
+
+    @unittest.expectedFailure
+    def test_BUG3_trail_should_protect_a_real_runner(self):
+        # DESIRED behavior (Step 4): a mean-reversion winner that runs to +0.15
+        # and then gives back the trail amount should exit via trail-stop with a
+        # locked gain LARGER than the flat take-profit — that is the asymmetry
+        # the trail is supposed to create. Currently it exits "take-profit" while
+        # still climbing, so this assertion fails -> expected failure until the
+        # exit policy is fixed. When fixed, remove the decorator.
+        reason, px = core.run_exit_path(
+            self.ENTRY, [0.55, 0.61, 0.65, 0.60], **PROD)
+        self.assertEqual(reason, "trail-stop")
+        self.assertGreater(px, self.ENTRY + PROD["take_profit"])
+
+
+class Settlement(unittest.TestCase):
+    def test_classify(self):
+        self.assertEqual(core.classify_settlement(0.5), "won")
+        self.assertEqual(core.classify_settlement(-0.5), "lost")
+        self.assertEqual(core.classify_settlement(0.0), "scratch")
+        self.assertEqual(core.classify_settlement(0.001), "scratch")  # within eps
+
+    def test_position_resolution_parse(self):
+        act = {"type": "ACTIVITY_TYPE_POSITION_RESOLUTION",
+               "positionResolution": {"marketSlug": "aec-atp-a-b-2026-07-14",
+                                       "afterPosition": {"realized": {"value": "1.2500"}}}}
+        self.assertEqual(core.parse_position_resolution(act),
+                         ("aec-atp-a-b-2026-07-14", 1.25))
+
+    def test_position_resolution_wrong_type(self):
+        self.assertIsNone(core.parse_position_resolution({"type": "ACTIVITY_TYPE_TRADE"}))
+
+    def test_position_resolution_bad_value_defaults_zero(self):
+        act = {"type": "ACTIVITY_TYPE_POSITION_RESOLUTION",
+               "positionResolution": {"marketSlug": "s",
+                                       "afterPosition": {"realized": {"value": None}}}}
+        self.assertEqual(core.parse_position_resolution(act), ("s", 0.0))
+
+    def test_trade_close_parse(self):
+        act = {"type": "ACTIVITY_TYPE_TRADE",
+               "trade": {"marketSlug": "s", "realizedPnl": {"value": "-0.30"}}}
+        self.assertEqual(core.parse_trade_close(act), ("s", -0.30))
+
+    def test_trade_close_ignores_opening_buy(self):
+        # An opening buy reports zero realizedPnl -> not a close.
+        act = {"type": "ACTIVITY_TYPE_TRADE",
+               "trade": {"marketSlug": "s", "realizedPnl": {"value": "0"}}}
+        self.assertIsNone(core.parse_trade_close(act))
+
+
+class ReconcilePosSize(unittest.TestCase):
+    def test_pos_size_known_key(self):
+        self.assertEqual(core.pos_size({"netPosition": "3"}), 3.0)
+
+    def test_pos_size_unknown_shape_returns_zero_BUG_R3(self):
+        # CHARACTERIZATION of R3: a real position under an unrecognized key reads
+        # as 0.0 == "flat", silently disarming the reconcile safety net.
+        self.assertEqual(core.pos_size({"weirdSizeField": "5"}), 0.0)
+
+    def test_pos_size_empty(self):
+        self.assertEqual(core.pos_size({}), 0.0)
+
+    def test_pos_size_safe_flags_unknown_shape(self):
+        # The R3 fix target: unknown shape -> known=False (treat as unsafe).
+        size, known = core.pos_size_safe({"weirdSizeField": "5"})
+        self.assertFalse(known)
+        # a recognized key -> known=True
+        size, known = core.pos_size_safe({"size": "5"})
+        self.assertTrue(known)
+        self.assertEqual(size, 5.0)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

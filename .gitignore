@@ -1,46 +1,32 @@
-bot.py.pre-*
-order_capture.jsonl
-diag.py
-patch_*.py
-__pycache__/
-*.pyc
-venv/
-0
+# ─── Secrets & runtime state (live only on the droplet) ──────────────
 .env
-signal_history.json
 config.json
+signal_history.json
 price_cache.json
 pregame_snap.json
+order_capture.jsonl
+
+# ─── Legacy scratch / build artifacts (predate this .gitignore) ──────
+build_*.py
+build bot v3
+check*.py
+diag.py
+patch_*.py
+dl.py
+
+# ─── bot.py backups produced by the old hand-patch workflow ──────────
 bot.py.pre-*
 bot.py.splicebak
 bot.py.working-*
 bot_backup.py
-build_*.py
-check*.py
-test_*.py
-order_capture.jsonl
-diag.py
-patch_*.py
+
+# ─── Python ──────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 venv/
-0
-.env
-signal_history.json
-config.json
-price_cache.json
-pregame_snap.json
-bot.py.pre-*
-bot.py.splicebak
-bot.py.working-*
-bot_backup.py
-build_*.py
-check*.py
-test_*.py
-order_capture.jsonl
-diag.py
-patch_*.py
-__pycache__/
-*.pyc
-venv/
-0
+.venv/
+.pytest_cache/
+
+# NOTE: do NOT ignore test_*.py — the real suite lives in tests/ and must
+# be tracked. Scratch scripts named test.py / test2.py / test3.py have been
+# removed; pytest is scoped to tests/ via pyproject.toml.

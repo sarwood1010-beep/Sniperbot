@@ -1,0 +1,7 @@
+[tool.pytest.ini_options]
+# Scope collection to tests/ ONLY. The repo root historically held scratch
+# scripts (test.py/test2.py/test3.py) that hit the network at import time and
+# broke collection; those are removed, but pinning testpaths keeps the namespace
+# clean regardless of what lands in the root later.
+testpaths = ["tests"]
+python_files = ["test_*.py"]
