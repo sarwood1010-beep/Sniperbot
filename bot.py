@@ -143,10 +143,11 @@ config={
     "reconcile_min":10,                # v16.15: minutes between periodic exchange-vs-local drift checks
     # ── Stage-1 edge measurement (tennis model vs Polymarket price) ──
     "measure_enabled":True,            # master switch for the measurement loop
-    "measure_interval":45,             # seconds between measurement sweeps
+    "measure_interval":600,            # seconds between sweeps (10 min — coarse, budget-safe)
     "measure_min_edge":0.04,           # edge threshold for a "would-fire" flag (measurement only)
     "sim_fee":0.0,                     # harsh-fill fee fraction (calibrate later vs real fills)
     "sim_slippage":0.0,                # harsh-fill absolute slippage against us
+    "feed_daily_cap":40,               # HARD cap on tennis-feed calls per UTC day (free tier = 50/day)
 }
 
 LEAGUES=["wta","atp"]
@@ -163,6 +164,9 @@ FEED_LIVE_URL=f"https://{FEED_HOST}/tennis/v2/extend/api/events/live"
 # We anchor the model to the market's price at first sighting, then hold the
 # priors fixed and log how the model diverges from the market as the score moves.
 MATCH_ANCHORS={}
+# Free-tier feed budget guard: hard-cap tennis-feed calls per UTC day.
+FEED_CALLS_TODAY=0
+FEED_CALLS_DATE=""
 
 intents=discord.Intents.default();intents.message_content=True
 bot=discord.Client(intents=intents);tree=app_commands.CommandTree(bot)
@@ -1449,6 +1453,24 @@ async def cmd_update(i:discord.Interaction):
         subprocess.Popen(["sudo","systemctl","restart","sniper-bot"])
     except Exception as e:await i.followup.send(f"Failed: {e}")
 
+@tree.command(name="feedtest",description="One tennis-feed call to validate connectivity (uses 1 of the daily budget)")
+async def cmd_feedtest(i:discord.Interaction):
+    global FEED_CALLS_TODAY,FEED_CALLS_DATE
+    if i.user.id!=OWNER:return await i.response.send_message("x",ephemeral=True)
+    await i.response.defer()
+    if not RAPIDAPI_KEY:
+        return await i.followup.send("⚠️ No `RAPIDAPI_KEY` in .env — feed is disabled. Add it and restart.")
+    today=datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if today!=FEED_CALLS_DATE:FEED_CALLS_DATE=today;FEED_CALLS_TODAY=0
+    ok,events=await asyncio.get_event_loop().run_in_executor(None,fetch_live_events,RAPIDAPI_KEY)
+    FEED_CALLS_TODAY+=1
+    if not ok:
+        return await i.followup.send(f"❌ Feed call failed (check key/quota). Calls today: {FEED_CALLS_TODAY}.")
+    tennis=[e for e in events if str(e.get("tourType","")).lower() in ("atp","wta")]
+    sample=", ".join(e.get("name","?")[:28] for e in tennis[:3]) or "(none live now)"
+    await i.followup.send(f"✅ Feed OK — {len(events)} live matches ({len(tennis)} ATP/WTA).\n"
+        f"Sample: {sample}\nFeed calls used today: **{FEED_CALLS_TODAY}** (cap {config.get('feed_daily_cap',40)}).")
+
 @tree.command(name="edge",description="Stage-1: recent model-vs-market measurement records")
 @app_commands.describe(n="How many recent records (1-15, default 8)")
 async def cmd_edge(i:discord.Interaction,n:int=8):
@@ -1529,7 +1551,12 @@ def evaluate_feed_match(e,markets):
     return rec
 
 async def measurement_loop():
-    """Stage-1 evidence collector. Read-only, paper-only, additive."""
+    """Stage-1 evidence collector. Read-only, paper-only, additive.
+    Budget-safe for the free tier (50 tennis-feed calls/UTC-day): a feed call is
+    spent ONLY when Polymarket lists a match dated today, and never more than
+    feed_daily_cap times per UTC day. Polymarket (our own account) is polled
+    freely to gate; the metered tennis feed is the scarce resource."""
+    global FEED_CALLS_TODAY,FEED_CALLS_DATE
     await bot.wait_until_ready()
     await asyncio.sleep(10)
     if not RAPIDAPI_KEY:
@@ -1541,24 +1568,42 @@ async def measurement_loop():
         try:
             if not config.get("measure_enabled",True):
                 await asyncio.sleep(30);continue
-            ok,events=await loop.run_in_executor(None,fetch_live_events,RAPIDAPI_KEY)
-            live=[e for e in (events or [])
-                  if str(e.get("status",""))=="InPlay"
-                  and str(e.get("tourType","")).lower() in ("atp","wta")]
+            # reset the daily feed-call counter at UTC midnight
+            today=datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if today!=FEED_CALLS_DATE:
+                FEED_CALLS_DATE=today;FEED_CALLS_TODAY=0
+            cap=int(config.get("feed_daily_cap",40))
+            # gate 1 (free): only spend a metered feed call if a listed match is
+            # dated today — otherwise there is nothing we could measure right now.
             markets=await loop.run_in_executor(None,gather_pm_markets)
-            matched=0;fires=0
-            for e in live:
-                rec=evaluate_feed_match(e,markets)
-                if rec:
-                    matched+=1
-                    if rec.get("fire_p1") or rec.get("fire_p2"):fires+=1
-                    append_measurement(rec)
-            slog_event(logging.INFO,"measure.tick",feed_live=len(live),
-                pm_markets=len(markets),matched=matched,would_fire=fires)
-            if live and markets and matched==0:
-                slog_event(logging.WARNING,"measure.NO_OVERLAP",feed_live=len(live),
-                    pm_markets=len(markets),
-                    msg="live_matches_and_pm_markets_exist_but_none_matched__check_name_matching")
+            today_markets=[m for m in markets if is_today_slug(m.get("market_slug",""))]
+            if not today_markets:
+                slog_event(logging.INFO,"measure.idle",pm_markets=len(markets),
+                    calls_today=FEED_CALLS_TODAY,reason="no_listed_match_dated_today")
+            elif FEED_CALLS_TODAY>=cap:
+                slog_event(logging.WARNING,"measure.budget_capped",
+                    calls_today=FEED_CALLS_TODAY,cap=cap,
+                    msg="daily_feed_call_cap_reached__paused_until_utc_midnight")
+            else:
+                ok,events=await loop.run_in_executor(None,fetch_live_events,RAPIDAPI_KEY)
+                FEED_CALLS_TODAY+=1
+                live=[e for e in (events or [])
+                      if str(e.get("status",""))=="InPlay"
+                      and str(e.get("tourType","")).lower() in ("atp","wta")]
+                matched=0;fires=0
+                for e in live:
+                    rec=evaluate_feed_match(e,today_markets)
+                    if rec:
+                        matched+=1
+                        if rec.get("fire_p1") or rec.get("fire_p2"):fires+=1
+                        append_measurement(rec)
+                slog_event(logging.INFO,"measure.tick",feed_live=len(live),
+                    today_markets=len(today_markets),matched=matched,would_fire=fires,
+                    calls_today=FEED_CALLS_TODAY,cap=cap)
+                if live and today_markets and matched==0:
+                    slog_event(logging.WARNING,"measure.NO_OVERLAP",feed_live=len(live),
+                        today_markets=len(today_markets),
+                        msg="live_matches_and_today_markets_exist_but_none_matched__check_name_matching")
         except Exception as ex:
             slog_event(logging.ERROR,"measure.error",err=repr(ex)[:200])
         await asyncio.sleep(max(20,float(config.get("measure_interval",45))))
