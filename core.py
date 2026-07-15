@@ -463,3 +463,40 @@ def implied_serve_priors(target_p1_matchup_prob, tour="atp", sets_to_win=2):
             hi = d
     d = (lo + hi) / 2.0
     return base + d, base - d
+
+
+# ─── harsh paper-fill simulator (honest execution) ───────────────────────────
+# Naive paper trading fills at a free mid price and looks profitable that never
+# survives real money. This models the WORST plausible fill so a proven edge has
+# already paid the costs that kill fake edges: BUY pays the ask, SELL receives
+# the bid (the spread), plus slippage against us and a fee, and a fill-or-kill
+# order that would need a worse-than-limit price simply MISSES (no fill).
+def simulate_fill(side, best_bid, best_ask, slippage=0.0, fee=0.0, limit_price=None):
+    """Return (filled: bool, fill_price: float|None). fee is a fraction of price
+    (e.g. 0.01 = 1%); slippage is an absolute price moved against us. Missing book
+    (bid/ask None) => no fill, conservatively (never invent a price)."""
+    if best_bid is None or best_ask is None:
+        return False, None
+    s = str(side).lower()
+    if s == "buy":
+        price = best_ask * (1.0 + fee) + slippage        # pay the ask, worse
+        if limit_price is not None and price > limit_price:
+            return False, None                            # FOK: would need worse than limit
+        return True, price
+    if s == "sell":
+        price = best_bid * (1.0 - fee) - slippage         # receive the bid, worse
+        if limit_price is not None and price < limit_price:
+            return False, None
+        return True, price
+    return False, None
+
+
+def round_trip_cost(best_bid, best_ask, slippage=0.0, fee=0.0):
+    """Total per-share cost of entering AND exiting at these quotes under the
+    harsh model: the spread + two fees + two slippages. This is the hurdle an
+    edge must clear to be real. Returns None if the book is missing."""
+    buy_ok, buy_px = simulate_fill("buy", best_bid, best_ask, slippage, fee)
+    sell_ok, sell_px = simulate_fill("sell", best_bid, best_ask, slippage, fee)
+    if not (buy_ok and sell_ok):
+        return None
+    return buy_px - sell_px

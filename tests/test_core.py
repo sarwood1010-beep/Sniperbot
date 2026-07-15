@@ -382,5 +382,39 @@ class ImpliedServePriors(unittest.TestCase):
         self.assertGreater(core.live_match_win_prob(p1s, p2s, st_break), 0.6)
 
 
+class HarshFillSim(unittest.TestCase):
+    def test_buy_pays_the_ask(self):
+        ok, px = core.simulate_fill("buy", 0.48, 0.52)
+        self.assertTrue(ok)
+        self.assertAlmostEqual(px, 0.52)
+
+    def test_sell_receives_the_bid(self):
+        ok, px = core.simulate_fill("sell", 0.48, 0.52)
+        self.assertTrue(ok)
+        self.assertAlmostEqual(px, 0.48)
+
+    def test_fee_and_slippage_make_it_worse(self):
+        ok, px = core.simulate_fill("buy", 0.48, 0.52, slippage=0.01, fee=0.02)
+        self.assertAlmostEqual(px, 0.52 * 1.02 + 0.01)
+
+    def test_fok_miss_when_worse_than_limit(self):
+        ok, px = core.simulate_fill("buy", 0.48, 0.52, limit_price=0.50)
+        self.assertFalse(ok)
+        self.assertIsNone(px)
+
+    def test_missing_book_is_a_miss_not_a_guess(self):
+        self.assertEqual(core.simulate_fill("buy", None, 0.52), (False, None))
+        self.assertEqual(core.simulate_fill("sell", 0.48, None), (False, None))
+
+    def test_round_trip_costs_the_spread(self):
+        # buy at 0.52, sell at 0.48 -> you're down 0.04 before anything moves
+        self.assertAlmostEqual(core.round_trip_cost(0.48, 0.52), 0.04)
+
+    def test_round_trip_includes_fees_and_slippage(self):
+        c = core.round_trip_cost(0.48, 0.52, slippage=0.01, fee=0.01)
+        # (0.52*1.01+0.01) - (0.48*0.99-0.01)
+        self.assertAlmostEqual(c, (0.52 * 1.01 + 0.01) - (0.48 * 0.99 - 0.01))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
