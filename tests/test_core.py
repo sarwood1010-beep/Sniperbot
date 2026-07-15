@@ -354,5 +354,33 @@ class LiveMatchWinProb(unittest.TestCase):
         self.assertIsNone(core.live_match_win_prob(0.6, 0.6, None))
 
 
+class ImpliedServePriors(unittest.TestCase):
+    def test_roundtrip_matches_target(self):
+        # priors solved from a target should reproduce that target pre-match.
+        for target in (0.35, 0.5, 0.65, 0.8):
+            p1s, p2s = core.implied_serve_priors(target, "atp")
+            st = core.parse_live_score("0-0", "0-0", "1,0")
+            self.assertAlmostEqual(core.live_match_win_prob(p1s, p2s, st), target, places=3)
+
+    def test_even_target_gives_equal_serves(self):
+        p1s, p2s = core.implied_serve_priors(0.5, "atp")
+        self.assertAlmostEqual(p1s, p2s, places=2)
+
+    def test_favorite_serves_stronger(self):
+        p1s, p2s = core.implied_serve_priors(0.75, "atp")
+        self.assertGreater(p1s, p2s)
+
+    def test_wta_baseline_lower(self):
+        # WTA baseline serve level is lower than ATP (fewer service points held)
+        self.assertLess(core.TOUR_BASE_SERVE["wta"], core.TOUR_BASE_SERVE["atp"])
+
+    def test_priors_then_live_update_moves_with_score(self):
+        # anchor to a 50/50 opening, then a break in set 1 should push P1 well
+        # above 50% -> demonstrates the model reacting to the live score.
+        p1s, p2s = core.implied_serve_priors(0.5, "atp")
+        st_break = core.parse_live_score("2-0", "0-0", "0,1")  # P1 up an early break
+        self.assertGreater(core.live_match_win_prob(p1s, p2s, st_break), 0.6)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -431,3 +431,35 @@ def live_match_win_prob(p1_serve, p2_serve, st, sets_to_win=2):
     set_if_p2 = set_win_prob(p1_serve, p2_serve, g1, g2 + 1, a_serves=next1)
     p1_set = p1_game * set_if_p1 + (1 - p1_game) * set_if_p2
     return _match_after_set(p1_serve, p2_serve, st, p1_set, sets_to_win)
+
+
+# ─── serve priors: anchor the model to the match's opening price ──────────────
+# We don't need an independent serve-stats source to start. Instead we fix the
+# tour-average serve level and solve for the serve GAP between the two players so
+# that the model's PRE-MATCH probability equals the market's opening price. Then
+# the model tracks the live score; any in-play divergence from the market is the
+# edge we're testing for. Approx tour-average share of service points won:
+TOUR_BASE_SERVE = {"atp": 0.64, "wta": 0.56}
+
+_START_STATE = {"sets_p1": 0, "sets_p2": 0, "games_p1": 0, "games_p2": 0,
+                "pts_p1": 0, "pts_p2": 0, "server": 1, "in_tiebreak": False}
+
+
+def implied_serve_priors(target_p1_matchup_prob, tour="atp", sets_to_win=2):
+    """Return (p1_serve, p2_serve) such that the model's pre-match win prob for
+    player 1 equals target_p1_matchup_prob. Fixes the average serve level at the
+    tour baseline and solves for the gap by bisection (live_match_win_prob is
+    monotonic in the gap)."""
+    base = TOUR_BASE_SERVE.get(tour, 0.63)
+    target = max(0.001, min(0.999, target_p1_matchup_prob))
+    span = min(base - 0.02, 0.98 - base)      # keep both serves in (0.02, 0.98)
+    lo, hi = -span, span
+    for _ in range(40):
+        d = (lo + hi) / 2.0
+        p = live_match_win_prob(base + d, base - d, _START_STATE, sets_to_win)
+        if p < target:
+            lo = d
+        else:
+            hi = d
+    d = (lo + hi) / 2.0
+    return base + d, base - d
