@@ -18,6 +18,7 @@ test; the whole point is that behavior changes are visible.
 import re
 import math
 from datetime import datetime
+from functools import lru_cache
 
 # bot.py hardcodes the trail-arm gate as `hw > e + 0.03`. Named here so the
 # eventual fix (Step 4) can move it without hunting a magic number.
@@ -258,6 +259,7 @@ def _deuce_win(p):
     return p * p / denom
 
 
+@lru_cache(maxsize=200000)
 def game_win_prob(p, a=0, b=0):
     """Probability the SERVER wins the current game.
 
@@ -301,6 +303,7 @@ def _tiebreak_first_serves(i):
     return ((i - 1) // 2) % 2 == 1
 
 
+@lru_cache(maxsize=200000)
 def tiebreak_win_prob(pa, pb, a=0, b=0, first_is_A=True):
     """Probability player A wins a 7-point tiebreak from score a-b.
     pa/pb = each player's point-win-on-serve probability. first_is_A = A served
@@ -322,6 +325,7 @@ def tiebreak_win_prob(pa, pb, a=0, b=0, first_is_A=True):
             + (1 - win_pt) * tiebreak_win_prob(pa, pb, a, b + 1, first_is_A))
 
 
+@lru_cache(maxsize=200000)
 def set_win_prob(pa, pb, a=0, b=0, a_serves=True):
     """Probability A wins the set from games score a-b, where a_serves = A serves
     the NEXT (fresh) game. First to 6 games, win by 2, tiebreak at 6-6. Partial
@@ -350,3 +354,80 @@ def match_win_prob_from_sets(p_set, sets_a=0, sets_b=0, sets_to_win=2):
         return 0.0
     return (p_set * match_win_prob_from_sets(p_set, sets_a + 1, sets_b, sets_to_win)
             + (1 - p_set) * match_win_prob_from_sets(p_set, sets_a, sets_b + 1, sets_to_win))
+
+
+# ─── live state: parse the feed and produce a live "true price" ──────────────
+# Maps the tennis-data-feed fields onto the model. Feed shape (confirmed live):
+#   score     "6-4,3-6,0-0"   completed sets then current-set games (last entry)
+#   points    "40-A"          current game; 0/15/30/40, A=advantage, 40-40=deuce
+#   indicator "1,0"           one-hot server flag; '1' first => player 1 serving
+_PTS = {"0": 0, "15": 1, "30": 2, "40": 3, "A": 4, "AD": 4}
+
+
+def parse_live_score(score, points, indicator):
+    """Parse the feed's live fields into a structured state dict, or None if the
+    strings don't parse (caller should log loudly rather than trade on garbage).
+    Returns: sets_p1, sets_p2, games_p1, games_p2, pts_p1, pts_p2 (0..4, 4=adv),
+    server (1 or 2), in_tiebreak (bool)."""
+    try:
+        sets = [s for s in str(score).split(",") if s.strip() != ""]
+        if not sets:
+            return None
+        completed, current = sets[:-1], sets[-1]
+        sp1 = sp2 = 0
+        for s in completed:
+            a, b = s.split("-")
+            a, b = int(a), int(b)
+            if a > b:
+                sp1 += 1
+            elif b > a:
+                sp2 += 1
+        ga, gb = current.split("-")
+        ga, gb = int(ga), int(gb)
+        in_tb = (ga == 6 and gb == 6)
+        pa_t, pb_t = str(points).strip().split("-")
+        if in_tb:
+            pa, pb = int(pa_t), int(pb_t)          # tiebreak points are integers
+        else:
+            pa = _PTS[pa_t.strip().upper()]
+            pb = _PTS[pb_t.strip().upper()]
+        ind = str(indicator).split(",")
+        server = 1 if ind[0].strip() == "1" else 2
+        return {"sets_p1": sp1, "sets_p2": sp2, "games_p1": ga, "games_p2": gb,
+                "pts_p1": pa, "pts_p2": pb, "server": server, "in_tiebreak": in_tb}
+    except (ValueError, KeyError, IndexError, AttributeError):
+        return None
+
+
+def _match_after_set(p1s, p2s, st, p1_wins_current_set, sets_to_win):
+    """Combine the (exact-ish) current-set win prob with future sets (iid
+    approximation) into a match win probability for player 1."""
+    s1, s2 = st["sets_p1"], st["sets_p2"]
+    p_set_future = set_win_prob(p1s, p2s, 0, 0, a_serves=True)
+    win_if = match_win_prob_from_sets(p_set_future, s1 + 1, s2, sets_to_win)
+    lose_if = match_win_prob_from_sets(p_set_future, s1, s2 + 1, sets_to_win)
+    return p1_wins_current_set * win_if + (1 - p1_wins_current_set) * lose_if
+
+
+def live_match_win_prob(p1_serve, p2_serve, st, sets_to_win=2):
+    """Probability PLAYER 1 wins the match, given each player's point-win-on-serve
+    probability and the parsed live state `st`. Composes: current game/tiebreak ->
+    current set -> match. This is the model's live "fair value" for the market."""
+    if st is None:
+        return None
+    g1, g2, server = st["games_p1"], st["games_p2"], st["server"]
+    if st["in_tiebreak"]:
+        p1_set = tiebreak_win_prob(p1_serve, p2_serve, st["pts_p1"], st["pts_p2"],
+                                   first_is_A=(server == 1))
+        return _match_after_set(p1_serve, p2_serve, st, p1_set, sets_to_win)
+    # normal game in progress: P(player 1 wins the current game)
+    if server == 1:
+        p1_game = game_win_prob(p1_serve, st["pts_p1"], st["pts_p2"])
+    else:
+        p1_game = 1.0 - game_win_prob(p2_serve, st["pts_p2"], st["pts_p1"])
+    # serve alternates to the other player for the next game
+    next1 = (server == 2)
+    set_if_p1 = set_win_prob(p1_serve, p2_serve, g1 + 1, g2, a_serves=next1)
+    set_if_p2 = set_win_prob(p1_serve, p2_serve, g1, g2 + 1, a_serves=next1)
+    p1_set = p1_game * set_if_p1 + (1 - p1_game) * set_if_p2
+    return _match_after_set(p1_serve, p2_serve, st, p1_set, sets_to_win)

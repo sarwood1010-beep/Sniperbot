@@ -291,5 +291,68 @@ class TennisModelSetMatch(unittest.TestCase):
         self.assertEqual(core.match_win_prob_from_sets(0.6, 3, 0, sets_to_win=3), 1.0)
 
 
+class LiveStateParsing(unittest.TestCase):
+    # fixtures captured from the real live feed
+    def test_parse_two_sets_even_start_of_third(self):
+        st = core.parse_live_score("6-4,3-6,0-0", "0-0", "1,0")
+        self.assertEqual(st, {"sets_p1": 1, "sets_p2": 1, "games_p1": 0,
+                              "games_p2": 0, "pts_p1": 0, "pts_p2": 0,
+                              "server": 1, "in_tiebreak": False})
+
+    def test_parse_advantage_returner(self):
+        st = core.parse_live_score("6-1,4-5", "40-A", "1,0")
+        self.assertEqual(st["sets_p1"], 1)
+        self.assertEqual(st["sets_p2"], 0)
+        self.assertEqual((st["games_p1"], st["games_p2"]), (4, 5))
+        self.assertEqual((st["pts_p1"], st["pts_p2"]), (3, 4))  # 40 vs advantage
+        self.assertEqual(st["server"], 1)
+
+    def test_parse_deuce_and_server2(self):
+        st = core.parse_live_score("3-0", "40-40", "0,1")
+        self.assertEqual((st["pts_p1"], st["pts_p2"]), (3, 3))
+        self.assertEqual(st["server"], 2)
+        self.assertEqual((st["sets_p1"], st["sets_p2"]), (0, 0))
+
+    def test_parse_tiebreak(self):
+        st = core.parse_live_score("6-4,6-6", "5-3", "1,0")
+        self.assertTrue(st["in_tiebreak"])
+        self.assertEqual((st["pts_p1"], st["pts_p2"]), (5, 3))
+
+    def test_parse_garbage_returns_none(self):
+        self.assertIsNone(core.parse_live_score("", "", ""))
+        self.assertIsNone(core.parse_live_score("nonsense", "x-y", "1,0"))
+
+
+class LiveMatchWinProb(unittest.TestCase):
+    def test_equal_players_start_near_even(self):
+        st = core.parse_live_score("0-0", "0-0", "1,0")
+        self.assertAlmostEqual(core.live_match_win_prob(0.62, 0.62, st), 0.5, places=1)
+
+    def test_symmetry_swapping_players(self):
+        # P1 winning-prob with (p1,p2) == 1 - P1 winning-prob with roles mirrored.
+        st1 = core.parse_live_score("0-0", "0-0", "1,0")   # P1 serves
+        st2 = core.parse_live_score("0-0", "0-0", "0,1")   # P2 serves (mirror)
+        a = core.live_match_win_prob(0.68, 0.60, st1)
+        b = core.live_match_win_prob(0.60, 0.68, st2)      # swap serve + server
+        self.assertAlmostEqual(a, 1 - b, places=6)
+
+    def test_a_set_and_break_up_is_strong(self):
+        # P1 won set 1, up a break in set 2, serving -> should be a heavy favorite
+        st = core.parse_live_score("6-2,3-1", "0-0", "1,0")
+        self.assertGreater(core.live_match_win_prob(0.63, 0.63, st), 0.85)
+
+    def test_a_set_and_break_down_is_weak(self):
+        st = core.parse_live_score("2-6,1-3", "0-0", "0,1")
+        self.assertLess(core.live_match_win_prob(0.63, 0.63, st), 0.15)
+
+    def test_serving_for_the_match_is_near_certain(self):
+        # P1 won set 1, leads 5-0 in set 2, serving at 40-0 -> essentially won
+        st = core.parse_live_score("6-0,5-0", "40-0", "1,0")
+        self.assertGreater(core.live_match_win_prob(0.62, 0.62, st), 0.97)
+
+    def test_none_state_returns_none(self):
+        self.assertIsNone(core.live_match_win_prob(0.6, 0.6, None))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
