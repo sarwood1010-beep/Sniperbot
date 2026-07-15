@@ -912,6 +912,42 @@ async def cmd_status(i:discord.Interaction):
     if lt>0:msg+=f"\nLive: ${lp:+.2f} ({lt})"
     await i.response.send_message(msg)
 
+@tree.command(name="stats",description="Detailed performance stats")
+async def cmd_stats(i:discord.Interaction):
+    if i.user.id!=OWNER:return await i.response.send_message("x",ephemeral=True)
+    d=load_data()
+    trades=[t for t in d.get("trades",[]) if t.get("resolved")]
+    def block(rows):
+        w=[t for t in rows if t.get("won")]
+        l=[t for t in rows if t.get("resolved") and not t.get("won")]
+        gw=sum(t.get("pnl",0) for t in w)
+        gl=sum(t.get("pnl",0) for t in l)
+        n=len(w)+len(l)
+        wr=(len(w)/n*100) if n else 0
+        aw=(gw/len(w)) if w else 0
+        al=(gl/len(l)) if l else 0
+        net=gw+gl
+        pf=(gw/abs(gl)) if gl else float("inf")
+        exp=(net/n) if n else 0
+        pfs=("inf" if pf==float("inf") else f"{pf:.2f}")
+        return (f"{len(w)}W-{len(l)}L ({wr:.0f}%) | net ${net:+.2f}\n"
+                f"  avg W ${aw:+.2f} | avg L ${al:+.2f} | PF {pfs} | exp ${exp:+.2f}/trade")
+    msg=f"**STATS** ({len(trades)} resolved)\n"
+    msg+="__Overall__\n"+block(trades)+"\n\n"
+    leagues={}
+    for t in trades:leagues.setdefault(t.get("league","?"),[]).append(t)
+    msg+="__By league__\n"
+    for lg in sorted(leagues):
+        msg+=f"**{lg.upper()}** "+block(leagues[lg])+"\n"
+    reasons={}
+    for t in trades:reasons.setdefault(t.get("exit_reason","?"),[]).append(t)
+    msg+="\n__By exit__\n"
+    for r in sorted(reasons,key=lambda x:str(x)):
+        rows=reasons[r]
+        rn=sum(t.get("pnl",0) for t in rows)
+        rw=sum(1 for t in rows if t.get("won"))
+        msg+=f"{r}: {rw}/{len(rows)} | ${rn:+.2f}\n"
+    await i.response.send_message(msg[:1990])
 @tree.command(name="top",description="Top 10 watched (WS subs)")
 async def cmd_top(i:discord.Interaction):
     if i.user.id!=OWNER:return await i.response.send_message("x",ephemeral=True)
