@@ -547,8 +547,36 @@ def last_name(name):
 
 def both_players_present(feed_p1, feed_p2, market_text):
     """True if both players' surnames appear as tokens in market_text (a
-    Polymarket title / side descriptions, order-independent). A first-pass
-    matcher; refined once we see the real market format."""
+    Polymarket title / side descriptions, order-independent)."""
     toks = name_tokens(market_text)
     ln1, ln2 = last_name(feed_p1), last_name(feed_p2)
     return bool(ln1) and bool(ln2) and ln1 in toks and ln2 in toks
+
+
+def _name_overlap(a, b):
+    """Score how strongly two player-name strings refer to the same person:
+    shared normalized tokens, +1 if surnames match. 0 = no relation."""
+    ta, tb = name_tokens(a), name_tokens(b)
+    if not ta or not tb:
+        return 0
+    score = len(ta & tb)
+    la, lb = last_name(a), last_name(b)
+    if la and la == lb:
+        score += 1
+    return score
+
+
+def match_market_to_feed(feed_p1, feed_p2, side_a, side_b):
+    """Given the feed's two players and Polymarket's two side names (which carry
+    full names), decide if they're the same match and, if so, which side name
+    maps to which player. Returns {"p1_side":..., "p2_side":...} or None.
+    Tries both pairings and requires BOTH players to match in the chosen one
+    (min > 0), picking the stronger pairing. Robust to name order and to
+    partial/extra given names."""
+    straight = min(_name_overlap(feed_p1, side_a), _name_overlap(feed_p2, side_b))
+    cross = min(_name_overlap(feed_p1, side_b), _name_overlap(feed_p2, side_a))
+    if straight == 0 and cross == 0:
+        return None
+    if straight >= cross:
+        return {"p1_side": side_a, "p2_side": side_b}
+    return {"p1_side": side_b, "p2_side": side_a}

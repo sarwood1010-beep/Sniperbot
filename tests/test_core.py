@@ -458,6 +458,34 @@ class NameMatching(unittest.TestCase):
         self.assertFalse(core.both_players_present(
             "Stefanos Tsitsipas", "Jerome Kym", "Tsitsipas vs Alcaraz"))
 
+    def test_match_market_straight(self):
+        # real names from the Polymarket screenshot
+        m = core.match_market_to_feed(
+            "Tiago Pereira", "Alejo Sanchez Quilez",
+            "Tiago Pereira", "Alejo Sanchez Quilez")
+        self.assertEqual(m, {"p1_side": "Tiago Pereira",
+                             "p2_side": "Alejo Sanchez Quilez"})
+
+    def test_match_market_crossed_order(self):
+        # feed lists players in the opposite order from Polymarket's sides
+        m = core.match_market_to_feed(
+            "Alejo Sanchez Quilez", "Tiago Pereira",
+            "Tiago Pereira", "Alejo Sanchez Quilez")
+        self.assertEqual(m["p1_side"], "Alejo Sanchez Quilez")  # p1 -> matching side
+        self.assertEqual(m["p2_side"], "Tiago Pereira")
+
+    def test_match_partial_surname(self):
+        # feed uses only the surname; Polymarket has full name
+        m = core.match_market_to_feed(
+            "Carabelli", "Burruchaga",
+            "Camilo Ugo Carabelli", "Roman Andres Burruchaga")
+        self.assertEqual(m["p1_side"], "Camilo Ugo Carabelli")
+
+    def test_no_match_different_players(self):
+        self.assertIsNone(core.match_market_to_feed(
+            "Roger Federer", "Rafael Nadal",
+            "Tiago Pereira", "Alejo Sanchez Quilez"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
