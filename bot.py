@@ -24,7 +24,11 @@ def slog_event(level,event,**kv):
     parts=" ".join(f"{k}={v}" for k,v in kv.items())
     slog.log(level,f"{event} {parts}".rstrip())
 
-load_dotenv()
+# override=True: .env is the source of truth. Without this, load_dotenv leaves a
+# variable alone if it's ALREADY set in the process environment — so a stale key
+# injected by systemd/the shell (e.g. an old RAPIDAPI_KEY from before a key
+# rotation) would silently shadow the correct value in .env. Make .env win.
+load_dotenv(override=True)
 def find_env(names):
     for n in names:
         v=os.environ.get(n)
