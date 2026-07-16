@@ -1517,8 +1517,12 @@ def fetch_live_events(api_key,timeout=20):
     """(ok, [event dicts]) from the tennis feed. Never raises."""
     if not api_key:return False,[]
     try:
+        # A User-Agent is REQUIRED: the feed backend blocks urllib's default
+        # "Python-urllib/x" UA as bot-protection (returns 403), but accepts a
+        # normal one. Confirmed via feed_diag.py: no-UA -> 403, curl UA -> 200.
         req=urllib.request.Request(FEED_LIVE_URL,headers={
-            "x-rapidapi-host":FEED_HOST,"x-rapidapi-key":api_key})
+            "x-rapidapi-host":FEED_HOST,"x-rapidapi-key":api_key,
+            "User-Agent":"curl/8.0.1"})
         with urllib.request.urlopen(req,timeout=timeout) as resp:
             data=json.loads(resp.read().decode("utf-8","replace"))
         results=data.get("results",[]) if isinstance(data,dict) else []
