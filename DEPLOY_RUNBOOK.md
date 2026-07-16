@@ -92,9 +92,14 @@ Press `Ctrl+C` to stop watching the logs (the bot keeps running).
 
 **8. Verify from Discord:**
 - `/status` → should say **PAPER**, WS connected.
-- `/config` → should show the new `measure_*` keys.
-- `/edge` → recent model-vs-market records (may say "no records yet" until a
-  listed match goes live — that's expected).
+- `/config` → should show the new `measure_*` keys and `feed_daily_cap`.
+- `/feedtest` → makes ONE tennis-feed call to confirm the key works from the bot
+  and shows how many feed calls you've used today. (Free tier = 50/day; my
+  testing already used ~25 today, so keep this to a couple of runs.)
+- `/edge` → recent model-vs-market records. Likely "no records yet": the current
+  Polymarket matches are dated tomorrow/next day, so the loop will log
+  `measure.idle` and spend **zero** feed calls until a listed match is dated
+  today. That's the budget guard working, not a fault.
 
 ---
 
