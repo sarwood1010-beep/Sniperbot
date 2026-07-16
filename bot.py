@@ -168,6 +168,11 @@ FEED_LIVE_URL=f"https://{FEED_HOST}/tennis/v2/extend/api/events/live"
 # We anchor the model to the market's price at first sighting, then hold the
 # priors fixed and log how the model diverges from the market as the score moves.
 MATCH_ANCHORS={}
+# Latest live order-book per slug from the WS: {slug:{"best_bid","best_ask","ts"}}.
+# Used by the measurement loop to compute REALIZABLE edge (buy at the ask), not
+# just the raw model-vs-mid gap. Only populated for WS-subscribed (actively
+# traded) markets — exactly the ones with a real, tradeable book.
+WS_BOOK={}
 # Free-tier feed budget guard: hard-cap tennis-feed calls per UTC day.
 FEED_CALLS_TODAY=0
 FEED_CALLS_DATE=""
@@ -708,6 +713,12 @@ async def on_market_tick(slug,payload):
     """v16.13: payload is dict with long_px, short_px, current, last_trade, best_bid, best_ask.
     Each WS tick contains BOTH sides — we evaluate both."""
     global top_games,scanning
+    # Capture the live book for the measurement loop BEFORE any gating, so it's
+    # available even while scanning is paused.
+    try:
+        WS_BOOK[slug]={"best_bid":payload.get("best_bid"),
+            "best_ask":payload.get("best_ask"),"ts":time.time()}
+    except Exception:pass
     if paused or not scanning:return
     side_info=None
     async with top_lock:
@@ -1496,9 +1507,11 @@ async def cmd_edge(i:discord.Interaction,n:int=8):
         for r in recs:
             age=int((time.time()-float(r.get('ts',time.time())))/60)
             fire="🎯" if (r.get("fire_p1") or r.get("fire_p2")) else ""
-            out.append(f"`{age}m` {r.get('match','?')[:34]} {str(r.get('score','')):14} "
+            sp=r.get('spread')
+            book=f"sprd {int(round(sp*100))}c" if sp is not None else "no book"
+            out.append(f"`{age}m` {r.get('match','?')[:30]} {str(r.get('score','')):12} "
                 f"model {r.get('model_p1',0)*100:.0f}% vs mkt {r.get('market_p1',0)*100:.0f}% "
-                f"(sum {r.get('market_sum',0)*100:.0f}%) {fire}")
+                f"({book}) {fire}")
         await i.followup.send("\n".join(out)[:1950])
     except Exception as e:
         traceback.print_exc()
@@ -1536,7 +1549,16 @@ def gather_pm_markets():
     for lg in LEAGUES:
         try:out.update(extract_aec_markets(search_events(lg)))
         except Exception as e:slog_event(logging.WARNING,"measure.pm_fetch_error",lg=lg,err=repr(e)[:120])
-    return [m for m in out.values() if not m.get("closed")]
+    markets=[m for m in out.values() if not m.get("closed")]
+    # enrich with the latest FRESH live book (best_bid/best_ask) from the WS, so
+    # the measurement can compute realizable edge. Only markets that are WS-
+    # subscribed and ticking recently get a book; stale (>180s) is ignored.
+    now=time.time()
+    for m in markets:
+        b=WS_BOOK.get(m.get("market_slug"))
+        if b and (now-float(b.get("ts",0)))<=180:
+            m["best_bid"]=b.get("best_bid");m["best_ask"]=b.get("best_ask")
+    return markets
 
 def append_measurement(rec):
     try:

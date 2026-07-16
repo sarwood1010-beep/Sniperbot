@@ -540,6 +540,63 @@ class MeasurementPipeline(unittest.TestCase):
         self.assertGreater(r1["edge_p1"], 0.0)                   # model > stale market
         self.assertTrue(r1["fire_p1"])                           # tradeable divergence
 
+    def _book_market(self, best_bid, best_ask):
+        # A = long side, C = short side; single price = the mid
+        return {"market_slug": "s", "closed": False,
+                "prices": {"Anna Alpha": round((best_bid + best_ask) / 2, 4),
+                           "Carla Charlie": round(1 - (best_bid + best_ask) / 2, 4)},
+                "sides_info": [{"description": "Anna Alpha", "long": True},
+                               {"description": "Carla Charlie", "long": False}],
+                "best_bid": best_bid, "best_ask": best_ask}
+
+    def test_realizable_edge_uses_the_ask_and_is_stricter_than_raw(self):
+        m = self._book_market(0.47, 0.48)   # 1-cent spread, mid 0.475
+        anchors = {}
+        base = {"participant1": "Anna Alpha", "participant2": "Carla Charlie",
+                "tourType": "wta"}
+        e0 = dict(base, score="0-0", points="0-0", indicator="1,0")
+        core.build_measurement_record(e0, [m], anchors, {"min_edge": 0.04})  # anchor
+        e1 = dict(base, score="4-0", points="0-0", indicator="1,0")          # A breaks
+        r = core.build_measurement_record(e1, [m], anchors, {"min_edge": 0.04})
+        self.assertTrue(r["has_book"])
+        self.assertAlmostEqual(r["spread"], 0.01, places=6)
+        # buying A means paying the ASK (0.48): realizable edge = model - 0.48
+        self.assertAlmostEqual(r["redge_p1"], round(r["model_p1"] - 0.48, 4), places=4)
+        # realizable edge is STRICTER (smaller) than the raw model-vs-mid edge
+        self.assertLess(r["redge_p1"], r["edge_p1"])
+
+    def test_wide_spread_kills_a_fake_edge(self):
+        # Same model divergence, but a HUGE spread (0.30/0.70) makes the ask so
+        # high that the realizable edge vanishes even though the raw edge is big.
+        m = self._book_market(0.30, 0.70)   # mid 0.50, 40-cent spread (thin market)
+        anchors = {}
+        base = {"participant1": "Anna Alpha", "participant2": "Carla Charlie",
+                "tourType": "wta"}
+        e0 = dict(base, score="0-0", points="0-0", indicator="1,0")
+        core.build_measurement_record(e0, [m], anchors, {"min_edge": 0.04})
+        e1 = dict(base, score="4-0", points="0-0", indicator="1,0")
+        r = core.build_measurement_record(e1, [m], anchors, {"min_edge": 0.04})
+        self.assertGreater(r["edge_p1"], 0.04)        # raw gap LOOKS tradeable
+        self.assertLess(r["redge_p1"], 0.04)          # but paying 0.70 ask kills it
+        self.assertFalse(r["fire_p1"])                # correctly does NOT fire
+
+    def test_no_book_falls_back_to_raw(self):
+        # market without best_bid/best_ask -> has_book False, fire uses raw edge
+        m = {"market_slug": "s", "closed": False,
+             "prices": {"Anna Alpha": 0.50, "Carla Charlie": 0.50},
+             "sides_info": [{"description": "Anna Alpha", "long": True},
+                            {"description": "Carla Charlie", "long": False}]}
+        anchors = {}
+        base = {"participant1": "Anna Alpha", "participant2": "Carla Charlie",
+                "tourType": "wta"}
+        core.build_measurement_record(dict(base, score="0-0", points="0-0", indicator="1,0"),
+                                      [m], anchors, {"min_edge": 0.04})
+        r = core.build_measurement_record(dict(base, score="4-0", points="0-0", indicator="1,0"),
+                                          [m], anchors, {"min_edge": 0.04})
+        self.assertFalse(r["has_book"])
+        self.assertIsNone(r["redge_p1"])
+        self.assertTrue(r["fire_p1"])                 # falls back to raw edge
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

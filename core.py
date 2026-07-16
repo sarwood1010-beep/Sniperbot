@@ -595,6 +595,14 @@ def match_market_to_feed(feed_p1, feed_p2, side_a, side_b):
     return {"p1_side": side_b, "p2_side": side_a}
 
 
+def _side_is_long(sides_info, side_name):
+    """Return the 'long' boolean for a side by name, or None if unknown."""
+    for s in (sides_info or []):
+        if str(s.get("description", "")).strip().lower() == str(side_name).strip().lower():
+            return s.get("long")
+    return None
+
+
 # ─── measurement record: the whole model-vs-market pipeline, pure ────────────
 def build_measurement_record(event, markets, anchors, cfg):
     """Match one live feed event to a Polymarket market, anchor the model to the
@@ -651,10 +659,38 @@ def build_measurement_record(event, markets, anchors, cfg):
     min_edge = float(cfg.get("min_edge", 0.04))
     fee = float(cfg.get("fee", 0.0))
     slip = float(cfg.get("slippage", 0.0))
-    # one price per side (no separate bid/ask yet) -> logs RAW model-vs-market
-    # divergence; spread cost is applied later from live WS best_bid/best_ask.
+    # RAW edge: model vs the single mid/last price. OVERSTATES the edge (ignores
+    # the spread) — kept only as a reference number.
     eg1 = edge_signal(model_p1, market_p1, market_p1, min_edge, slip, fee)
     eg2 = edge_signal(1.0 - model_p1, market_p2, market_p2, min_edge, slip, fee)
+    # REALIZABLE edge: model vs the price you'd ACTUALLY pay (the ask), from the
+    # live book. best_bid/best_ask are the LONG side's book; the SHORT side's
+    # book is the complement (short bid = 1-best_ask, short ask = 1-best_bid).
+    # You buy a side at ITS ask. This is the number that separates a real,
+    # tradeable edge from a mirage created by a wide spread on a thin market.
+    bb, ba = market.get("best_bid"), market.get("best_ask")
+    try:
+        bb = float(bb) if bb is not None else None
+        ba = float(ba) if ba is not None else None
+    except (TypeError, ValueError):
+        bb = ba = None
+    sides_info = market.get("sides_info")
+
+    def _side_book(side_name):
+        il = _side_is_long(sides_info, side_name)
+        if bb is None or ba is None or il is None:
+            return None, None
+        return (bb, ba) if il else (1.0 - ba, 1.0 - bb)
+
+    p1_bid, p1_ask = _side_book(mapping["p1_side"])
+    p2_bid, p2_ask = _side_book(mapping["p2_side"])
+    reg1 = edge_signal(model_p1, p1_bid, p1_ask, min_edge, slip, fee) if p1_ask is not None else None
+    reg2 = edge_signal(1.0 - model_p1, p2_bid, p2_ask, min_edge, slip, fee) if p2_ask is not None else None
+    has_book = (bb is not None and ba is not None)
+    spread = round(ba - bb, 4) if has_book else None
+    # Fire on the REALIZABLE edge when a book is available; fall back to raw.
+    fire_p1 = bool(reg1["fire"]) if reg1 else bool(eg1["fire"])
+    fire_p2 = bool(reg2["fire"]) if reg2 else bool(eg2["fire"])
     return {"match": p1 + " vs " + p2, "tour": tour,
             "slug": market.get("market_slug"), "score": event.get("score"),
             "points": event.get("points"), "indicator": event.get("indicator"),
@@ -664,4 +700,7 @@ def build_measurement_record(event, markets, anchors, cfg):
             "anchor_prob": round(anc["anchor_prob"], 4),
             "edge_p1": (round(eg1["edge"], 4) if eg1["edge"] is not None else None),
             "edge_p2": (round(eg2["edge"], 4) if eg2["edge"] is not None else None),
-            "fire_p1": bool(eg1["fire"]), "fire_p2": bool(eg2["fire"])}
+            "best_bid": bb, "best_ask": ba, "spread": spread, "has_book": has_book,
+            "redge_p1": (round(reg1["edge"], 4) if (reg1 and reg1["edge"] is not None) else None),
+            "redge_p2": (round(reg2["edge"], 4) if (reg2 and reg2["edge"] is not None) else None),
+            "fire_p1": fire_p1, "fire_p2": fire_p2}
