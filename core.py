@@ -516,6 +516,41 @@ def round_trip_cost(best_bid, best_ask, slippage=0.0, fee=0.0):
     return buy_px - sell_px
 
 
+# ─── odds -> probability (for a sharp external reference, e.g. Pinnacle) ─────
+# The most robust prediction-market edge is "the thin market lags a sharp book."
+# These convert a sharp book's two-way odds into a fair (de-vigged) probability
+# we can compare to Polymarket's price via edge_signal — same as we do the model.
+def decimal_to_prob(odds):
+    """Decimal odds -> implied probability (includes the book's margin)."""
+    try:
+        o = float(odds)
+    except (TypeError, ValueError):
+        return None
+    return (1.0 / o) if o > 0 else None
+
+
+def american_to_prob(odds):
+    """American (moneyline) odds -> implied probability (includes margin)."""
+    try:
+        o = float(odds)
+    except (TypeError, ValueError):
+        return None
+    if o == 0:
+        return None
+    return (100.0 / (o + 100.0)) if o > 0 else ((-o) / ((-o) + 100.0))
+
+
+def devig_two_way(p_a, p_b):
+    """Remove the bookmaker margin from a two-way market. Returns fair
+    (prob_a, prob_b) summing to 1.0 (proportional de-vig), or None on bad input."""
+    if p_a is None or p_b is None:
+        return None
+    s = p_a + p_b
+    if s <= 0:
+        return None
+    return p_a / s, p_b / s
+
+
 # ─── edge decision: model fair value vs market price, after costs ────────────
 def edge_signal(fair_prob, best_bid, best_ask, min_edge, slippage=0.0, fee=0.0):
     """Decide whether BUYING this side is worth it. In a binary market a winning

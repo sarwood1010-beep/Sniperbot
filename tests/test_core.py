@@ -447,6 +447,25 @@ class EdgeSignal(unittest.TestCase):
         self.assertEqual(r["reason"], "no_fill")
 
 
+class OddsConversion(unittest.TestCase):
+    def test_decimal_to_prob(self):
+        self.assertAlmostEqual(core.decimal_to_prob(2.0), 0.5)
+        self.assertAlmostEqual(core.decimal_to_prob(1.5), 1 / 1.5)
+        self.assertIsNone(core.decimal_to_prob("x"))
+
+    def test_american_to_prob(self):
+        self.assertAlmostEqual(core.american_to_prob(100), 0.5)
+        self.assertAlmostEqual(core.american_to_prob(-110), 110 / 210)
+        self.assertAlmostEqual(core.american_to_prob(150), 100 / 250)
+
+    def test_devig_two_way(self):
+        # a 5% overround market de-vigs to fair probs summing to 1
+        fa, fb = core.devig_two_way(0.55, 0.50)
+        self.assertAlmostEqual(fa + fb, 1.0)
+        self.assertAlmostEqual(fa, 0.55 / 1.05)
+        self.assertIsNone(core.devig_two_way(None, 0.5))
+
+
 class NameMatching(unittest.TestCase):
     def test_normalize_strips_accents_and_case(self):
         self.assertEqual(core.normalize_name("Stéfanos Tsitsipás"), "stefanos tsitsipas")
