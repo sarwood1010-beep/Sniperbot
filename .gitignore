@@ -5,6 +5,7 @@ signal_history.json
 price_cache.json
 pregame_snap.json
 order_capture.jsonl
+measurement_log.jsonl
 
 # ─── Legacy scratch / build artifacts (predate this .gitignore) ──────
 build_*.py
