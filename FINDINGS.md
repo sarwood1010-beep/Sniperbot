@@ -24,6 +24,21 @@ a set+break: model 83%, market still 51%), which is exactly the original edge
 thesis. Lesson: never conclude from a cherry-picked subset; use all the data +
 a robust metric.
 
+## TENNIS: RULED OUT — final verdict (2026-07-18)
+Directly analyzed the downloaded log (8139 recs, 65-71 matches). Decisive:
+- **No latency edge.** 2832 divergence events (|model-market|>=8pts, avg 17.6pts):
+  over 1-10 min the market closes ~0% of the gap and converges <45% of the time.
+  Even FRESH divergences right after a score change (model jumps) -> market moves
+  AWAY (gap_closed -0.22, 35% converge). The market does NOT lag our model.
+- **No accuracy edge.** Our model OVERSHOOTS on breaks (up-a-break -> 83%); the
+  market correctly discounts (~55%) and is more right. The Polymarket in-play
+  tennis market is EFFICIENT (tracks score +0.64, beats our model, doesn't lag).
+- **Pinnacle NOT worth buying:** a market this efficient is unlikely to lag
+  Pinnacle enough to beat $99/mo + thin liquidity. Prior dropped.
+=> CONCLUSION: efficient + thin market = no retail edge for our tools. STOP the
+spend (cancel RapidAPI $29, do NOT buy Pinnacle). Reached for ~$0 trading loss.
+The hardened bot + analysis toolkit are reusable for another sport/venue.
+
 ## ROOT CAUSE FOUND — our market price + outcome data is corrupted
 Investigated the downloaded log (8139 recs, 71 matches) directly. Findings:
 - **market_p2 ~= market_p1 (mean |diff| 0.07), NOT complementary.** The two

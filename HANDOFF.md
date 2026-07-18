@@ -1,96 +1,92 @@
 # HANDOFF — read this first (context-window bridge)
 
-You are picking up a Polymarket US in-play **tennis** trading research project.
-Goal: find a REAL, defined edge and grow principal slowly. **Paper only — never
-enable live trading.** Read `FINDINGS.md` for the full journey; this file is the
-state + the plan.
+You are picking up a Polymarket US sports-trading research project. Goal: find a
+REAL, defined edge and grow principal slowly. **Paper only — never enable live
+trading. Never commit secrets.** Full history in `FINDINGS.md`.
 
-## THE DEFINED EDGE (decided) — pursue this, not the model
-**"Polymarket US in-play tennis lags a sharp book (Pinnacle). Buy the side
-Pinnacle prices higher than Polymarket does; profit as Polymarket converges."**
-- Our home-grown win-prob model is a WEAK edge (it knows only the score; the
-  market knows more and tracks the score at +0.64 corr). Do NOT rely on it as the
-  edge — keep it only as a sanity check.
-- Sharp reference = **The Odds API, Business tier ($99/mo, 200k req/mo)** which
-  includes **Pinnacle** in-play tennis match-winner odds. Legal to CONSUME as
-  data (we trade on Polymarket, not Pinnacle). See `RESEARCH_sharp_reference.md`.
+## STATUS: Tennis is RULED OUT. Next task = evaluate a NEW sport (candidate: MLB).
+Tennis (in-play, Polymarket US) has no retail edge for our tools — the market is
+efficient (it beats our win-prob model and does NOT lag it) and the books are
+thin. Proven directly from data, ~$0 trading loss. See FINDINGS.md "TENNIS: RULED
+OUT". The RapidAPI tennis sub should be cancelled; do NOT buy Pinnacle.
 
-## HARD CONSTRAINTS
-1. Never enable live trading (default paper). 2. Never commit `.env`/secrets.
-3. `config.json` is gitignored + runtime-mutable. 4. `py_compile` must pass
-before deploy. 5. Loud failure over silent degradation.
+## THE LESSON (what killed tennis = what to screen a new sport for)
+1. **Liquidity/depth** — tennis books were thin (token quotes ~10 shares). Need a
+   market with REAL depth to trade size. Major US sports (MLB/NBA/NFL) likely
+   deeper on Polymarket than niche tennis.
+2. **Market inefficiency** — the tennis market was EFFICIENT (didn't lag a good
+   estimate). An edge needs the Polymarket price to LAG a good win-prob or a
+   sharp reference. This is the #1 thing to MEASURE, not assume.
+3. **A genuinely accurate model** — our tennis model OVERSHOT (worse than market).
+   Pick a sport with mature, calibrated public win-prob so our estimate is right.
 
-## STATE
-- **Bot is deployed & running in PAPER on the droplet**, on the `hardening`
-  branch (NOT merged to main — main is the instant rollback). Hardening is done:
-  R1 sell-bug fixed, tested `core.py`, structured logging, budget-safe
-  measurement loop, `/edge` `/feedtest` commands, deploy runbook.
-- Feed: RapidAPI tennis (`tennis-api-atp-wta-itf`), key in droplet `.env` as
-  `RAPIDAPI_KEY`. Endpoint `/tennis/v2/extend/api/events/live` = all live matches.
-  Free tier 50/day; **user is upgrading to Pro $29/mo (150k/mo)**.
-- Measurement loop logs to `/home/deploy/polymarket-discord-bot/measurement_log.jsonl`.
+## WHY MLB IS THE RECOMMENDED NEXT TEST
+- **Free, excellent live data:** MLB StatsAPI (statsapi.mlb.com) is public and
+  detailed — live inning/score/outs/baserunners/count, and MLB even publishes its
+  own win probability. No paid feed needed to start.
+- **Mature, accurate live win-prob models** (FanGraphs et al.) — so OUR estimate
+  would be calibrated, unlike the tennis model.
+- **Likely more liquid** (major US sport) and **in-season now** (daily games ->
+  fast data collection). Discrete events (runs/innings) = repricing moments.
+- Caveat: MLB was cut by the OLD bot (PF 0.68) — but under the edge-LESS
+  mean-reversion strategy that lost everywhere; NOT informative about a real edge.
+- Alternatives: NBA (liquid, mature model, but OFF-SEASON in July); NFL (most
+  liquid, but weekly/seasonal, starts Sept); soccer (inefficiency potential but
+  messy Polymarket market structure — ~328 prop markets per match).
 
-## THE BLOCKER (must fix before any edge can be measured)
-Our logged market price is CORRUPTED (confirmed by analyzing the downloaded log):
-- `market_p1` and `market_p2` from `extract_aec_markets` (REST `marketSides`
-  "price") are near-DUPLICATES (mean |diff| 0.07), NOT complementary. `market_p2`
-  and `market_sum` are garbage. The `healthy()` sum-in-[0.9,1.1] filter therefore
-  selected a broken subset -> ALL prior calibration/Brier/edge results are VOID.
-- Settlement prices flip/collapse -> cannot extract winners from price; completed
-  scores almost never captured (1/71) -> NO reliable outcomes.
-- **What IS good:** `market_p1` during play tracks the score (venue is ALIVE);
-  the WS order book (`best_bid`/`best_ask`, and `longQuote`/`shortQuote` in `/raw`)
-  IS complementary and is the CLEAN price.
+## METHODOLOGY FOR NEXT WINDOW (reuse the toolkit; CHEAP checks FIRST)
+Do NOT build heavy or spend money before the two cheap screens pass:
+1. **Liquidity screen:** on a live MLB game, inspect the Polymarket order book
+   depth (via the bot's WS `/raw` or a direct read). Is there real size, not a
+   token quote? If books are as thin as tennis, stop.
+2. **Efficiency screen:** compare a good MLB live win-prob (MLB StatsAPI's own, or
+   a public model) to Polymarket's price over a few games. Does Polymarket LAG it
+   (edge) or track it (efficient, like tennis)? Reuse the lag/convergence method
+   from `analyze_edge_v2.py` / the tennis analysis.
+3. Set a GO/NO-GO bar UP FRONT (e.g., a lag that plausibly nets >3-5x any data
+   cost at realistic depth). Below bar -> stop, report, don't sink more time.
+4. Only if both screens pass: adapt the measurement loop (new feed + a `core.py`
+   MLB win-prob function + matching by team/date), gather clean data, paper-trade
+   with the harsh fill sim, then the staged funding plan.
 
-## PLAN FOR THIS NEW WINDOW (execution)
-1. **Fix the clean Polymarket price:** use the WS order-book mid (from
-   `best_bid`/`best_ask`, mapping long/short to the right player via `sides_info`)
-   as the market price, NOT the REST `marketSides` price. Expand WS book coverage
-   if needed. Drop `market_p2`/`market_sum`-based filters.
-2. **Add the Pinnacle reference:** integrate The Odds API (Business) in-play
-   tennis. Match its match to the Polymarket market by player names (reuse
-   `core.match_market_to_feed`). Log Pinnacle implied prob (de-vigged) alongside
-   the Polymarket book price, per match, over time.
-3. **Measure the edge (no model, no outcomes needed for the core signal):** does
-   Polymarket's price lag Pinnacle's? By how much, and does Polymarket converge
-   toward Pinnacle? Also check LIQUIDITY (book depth) — a real-but-untradeable
-   gap is not an edge.
-4. Only after a clean gap is confirmed: paper-trade the gap with the harsh fill
-   sim (`core.simulate_fill`) + settlement P&L. Then the staged funding plan.
+## REUSABLE ASSETS (all built + tested)
+- `core.py` — pure, unit-tested decision logic (edge_signal, simulate_fill,
+  round_trip_cost, match_market_to_feed, build_measurement_record pattern). Add an
+  MLB win-prob function here (game state -> P(win)).
+- `tests/test_core.py`, `.github/workflows/ci.yml` (py_compile + pytest gate).
+- Analysis tools: `analyze_edge_v2.py`, `analyze_calibration.py`,
+  `diag_bookmovement.py` (proves venue alive/efficient), `diag_resolved.py`.
+- Bot: hardened, deployed in PAPER on `hardening` branch. Measurement loop is
+  budget-safe + read-only; adaptable to a new feed. `DEPLOY_RUNBOOK.md`.
 
-## OPEN DECISION FOR THE USER
-Spend **$99/mo** for The Odds API Business (Pinnacle) to pursue edge #3 (strong
-prior) — RECOMMENDED — vs. keep trying to salvage the model (weak). User is
-leaning "prove then fund"; wants an edge defined before more building (done: it's
-#3). Confirm the $99/mo spend before integrating Pinnacle.
+## KNOWN BUGS to fix if reusing the measurement loop for MLB
+- The REST `market_p1`/`market_p2`/`market_sum` from `extract_aec_markets` are
+  CORRUPTED (p1~=p2, not complementary). Use the WS order-book (`best_bid`/
+  `best_ask`) as the market price, NOT the REST marketSides "price".
+- No reliable OUTCOME capture — add a clean settlement record (real game result),
+  not a last-snapshot price proxy.
 
 ## OPERATIONAL FACTS (critical for a fresh context)
-- **No droplet access** for the assistant. User runs commands (Termius) or
-  downloads files. To analyze the log locally: user downloads
-  `measurement_log.jsonl` to their PC (last at
-  `C:\Users\a00579503\Downloads\measurement_log.jsonl`), assistant reads it.
-- **Repo is LOCAL at `C:\Users\a00579503\Documents\Sniperbot`** (shell cwd
-  defaults to the Git install dir — always use absolute paths).
-- **No usable Python locally except FreeCAD's:**
-  `"C:\Program Files\FreeCAD 1.0\bin\python.exe"` (3.11, stdlib only). Use it for
-  `py_compile` and running the stdlib `unittest`/analysis scripts.
-- **`git push` fails from the Bash tool (broken PATH); use the PowerShell tool**
-  for git commit/push. (Its output wraps git stderr as a red "error" but exit 0 =
-  success; check for the `->` ref line.)
-- **Deploy** = user pulls the `hardening` branch on the droplet + restarts; see
-  `DEPLOY_RUNBOOK.md`. Droplet loads secrets via
-  `EnvironmentFile=/home/deploy/polymarket-discord-bot/.env`; `load_dotenv(
-  override=True)` so `.env` wins. Feed calls need `User-Agent` header (backend
-  blocks urllib default).
-- Analysis tools (run on droplet or locally): `analyze_edge.py`,
-  `analyze_edge_v2.py`, `analyze_calibration.py`, `diag_bookmovement.py`
-  (proved venue alive), `diag_resolved.py`. Note: all outcome-based results are
-  VOID until the price/outcome bugs are fixed.
-- Memory files (persist across sessions): `sniperbot-env.md`,
-  `sniperbot-hardening.md` under the project memory dir.
+- **No droplet access.** User runs commands (Termius) / downloads files. To
+  analyze data locally: user downloads the log to their PC (last at
+  `C:\Users\a00579503\Downloads\`), assistant reads it directly.
+- **Repo LOCAL at `C:\Users\a00579503\Documents\Sniperbot`** (shell cwd defaults
+  to the Git install dir — use absolute paths).
+- **Only usable local Python is FreeCAD's:** `"C:\Program Files\FreeCAD 1.0\bin\
+  python.exe"` (3.11, stdlib). Use for py_compile + running unittest/analysis.
+- **`git push` is broken from the Bash tool — use the PowerShell tool for git.**
+  (Its output wraps git stderr as a red "error"; exit 0 + a `->` ref line = ok.)
+- Deploy = user pulls `hardening` on the droplet + restarts (DEPLOY_RUNBOOK.md).
+  `.env` via systemd EnvironmentFile; `load_dotenv(override=True)`; feed HTTP
+  needs a `User-Agent` header.
+- Memory files persist: `sniperbot-env.md`, `sniperbot-hardening.md`.
 
-## FIRST MESSAGE FOR THE NEW WINDOW
-"Continue the Sniperbot tennis edge project. Read HANDOFF.md and FINDINGS.md.
-The plan: fix the clean Polymarket WS-book price, add the Pinnacle reference (The
-Odds API), and measure whether Polymarket lags Pinnacle. Confirm the $99/mo spend
-first, then start with step 1 (clean price)."
+## FIRST MESSAGE FOR THE NEW WINDOW (paste this)
+"Continue the Sniperbot project. Tennis is ruled out (see HANDOFF.md + FINDINGS.md
+in C:\Users\a00579503\Documents\Sniperbot). Now evaluate MLB on Polymarket US.
+Start with the two CHEAP screens before building/spending: (1) is the Polymarket
+MLB in-play order book actually LIQUID (real depth)? (2) does the Polymarket price
+LAG a good MLB live win-prob (MLB StatsAPI is free) or track it efficiently like
+tennis did? Reuse the analysis toolkit and the lag/convergence method. Set a
+go/no-go bar first. Don't repeat the tennis mistakes (corrupted REST prices, no
+outcomes, over-concluding from a small/filtered subset)."
