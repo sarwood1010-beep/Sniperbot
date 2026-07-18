@@ -24,7 +24,34 @@ a set+break: model 83%, market still 51%), which is exactly the original edge
 thesis. Lesson: never conclude from a cherry-picked subset; use all the data +
 a robust metric.
 
-## OPEN — the tennis model-vs-Polymarket edge (NOT ruled out; re-opened)
+## ROOT CAUSE FOUND — our market price + outcome data is corrupted
+Investigated the downloaded log (8139 recs, 71 matches) directly. Findings:
+- **market_p2 ~= market_p1 (mean |diff| 0.07), NOT complementary.** The two
+  marketSides "price" fields from extract_aec_markets both track ~participant1 /
+  the favorite. So `market_p2` and `market_sum` are GARBAGE.
+- **The `healthy()` sum-in-[0.9,1.1] filter therefore selected a non-
+  representative subset** -> every calibration/Brier/edge conclusion that used it
+  is INVALID (that's why market always looked ~50% / Brier ~0.25 / actual=0%).
+- **At settlement the price flips/collapses** (mkt_p1 -> 0, mkt_p2 -> 0.99, sum
+  -> ~1) even for a player who was winning (e.g. Korneeva up 6-2,5-2 shows
+  mkt_p1=0). Last-live mkt_p1 -> all p1; settlement -> all p2. So we CANNOT
+  extract true winners from the price. And completed scores are almost never
+  captured (1/71). => **NO reliable OUTCOMES. Calibration is impossible on this
+  data.**
+- **What survives (trustworthy):** market_p1 DURING PLAY tracks the score (corr
+  +0.64, hits 0.98 for dominant players, 0.16 for losing ones). Venue is ALIVE.
+
+### Implication
+The 8k existing records can show the venue is alive, but CANNOT answer "does the
+model beat the market" (corrupted prices, no outcomes). We must FIX DATA
+COLLECTION and re-gather:
+1. Log the CLEAN market price = the WS order book (bid/ask / longQuote/shortQuote
+   were complementary in /raw), NOT the corrupted REST marketSides "price".
+2. Capture the REAL match outcome (feed result endpoint, or a completed score,
+   or Polymarket resolution) — a dedicated settlement record, not a price proxy.
+Then collect fresh clean data and re-run calibration.
+
+## OPEN — the tennis model-vs-Polymarket edge (NOT ruled out; blocked on clean data)
 Thesis: a live tennis win-prob model (anchored to the opening price, updated by
 the score) diverges from a slow Polymarket price -> trade the gap.
 
