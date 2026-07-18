@@ -14,7 +14,17 @@ Find a real, tradeable edge and slowly grow principal. Paper-only until proven.
   ~50% hit rate = coin flip, PF ~1.0, expectancy ~0. The trail-stop was dead
   code. Confidence: HIGH.
 
-## OPEN — the tennis model-vs-Polymarket edge (NOT yet ruled out)
+## CORRECTION (important) — the venue is NOT dead
+An earlier read ("Polymarket in-play tennis is a dead ~50% market") was WRONG. It
+was based on 3 cherry-picked snapshots from the tiny has_book subset + a buggy
+calibration. `diag_bookmovement.py` on the FULL data: 59/70 markets tracked the
+score, avg corr(market, model) = +0.64, market prices ranged 0.5-0.9 during play.
+The markets are ALIVE and track the match — but appear to LAG the model (e.g. up
+a set+break: model 83%, market still 51%), which is exactly the original edge
+thesis. Lesson: never conclude from a cherry-picked subset; use all the data +
+a robust metric.
+
+## OPEN — the tennis model-vs-Polymarket edge (NOT ruled out; re-opened)
 Thesis: a live tennis win-prob model (anchored to the opening price, updated by
 the score) diverges from a slow Polymarket price -> trade the gap.
 
