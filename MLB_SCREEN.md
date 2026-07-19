@@ -45,7 +45,12 @@ lag/convergence method (`analyze_edge_v2.py`, `diag_bookmovement.py`).
 
 ## THE GO/NO-GO BAR (both screens must pass)
 
-### Screen 1 — Liquidity / depth  (the gate that thin books failed on tennis)
+### Screen 1 — Liquidity / depth  ==> PASSED (2026-07-19, live SF@SEA & PIT@CLE)
+> RESULT: spreads 0.5c; $1.5k–$180k resting within 2c/side (bar >=~$100). Deep +
+> tight, not tennis-thin. Read via REST `pm.markets.book`/`bbo` (the WS lite feed
+> sends 0 frames for same-day slugs). Slug built from StatsAPI; see FINDINGS.md.
+> Gate cleared — proceed to Screen 2. Original bar retained below for reference.
+
 Tennis died partly on depth: token quotes ~10 shares; only rare markets had a
 ~1c spread. We want to scale past $2 flat bets, so the bar is stated in tradeable
 size, sampled across several live games/innings (never one cherry-picked snapshot):

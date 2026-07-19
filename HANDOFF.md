@@ -4,7 +4,9 @@ You are picking up a Polymarket US sports-trading research project. Goal: find a
 REAL, defined edge and grow principal slowly. **Paper only — never enable live
 trading. Never commit secrets.** Full history in `FINDINGS.md`.
 
-## STATUS: Tennis is RULED OUT. Next task = evaluate a NEW sport (candidate: MLB).
+## STATUS: Tennis RULED OUT. MLB Screen 1 (liquidity) PASSED. Next = Screen 2 (lag).
+## MLB in-play books are deep+tight (unlike tennis). Now measure if PM price LAGS
+## the free StatsAPI win-prob (edge) or tracks it (efficient). Build mlb_collect.py.
 Tennis (in-play, Polymarket US) has no retail edge for our tools — the market is
 efficient (it beats our win-prob model and does NOT lag it) and the books are
 thin. Proven directly from data, ~$0 trading loss. See FINDINGS.md "TENNIS: RULED
@@ -94,29 +96,30 @@ Do NOT build heavy or spend money before the two cheap screens pass:
   slug (commit a17604f), sorts TODAY-first (so a live game is never truncated out
   of the WS sub or the type-probe), and prints a loud WARNING if 0 markets are
   dated today. So the afternoon "future-only" risk is instrumented, not silent.
-- LIVE RUN (07-19 00:28 UTC = 20:28 ET 07-18) RESULT — search discovery is
-  BROKEN for live markets. `mlb_discover.py` returned 41 markets, ALL dated
-  07-20/07-21 (future); 0 dated today. StatsAPI confirmed SF@SEA and PIT@CLE(g2)
-  were IN PROGRESS at that moment, yet NO same-day (07-18) market appeared at all
-  — not live, final, or pre-game. So `search.query({"query":"mlb"})` EXCLUDES
-  same-day markets; it only lists games ~2-3 days out. => The search is the wrong
-  discovery path, and we have NOT yet confirmed an in-play MLB market even EXISTS.
-- KEY ENABLER found: each team's StatsAPI `abbreviation`.lower() == the Polymarket
-  slug token for all 30 teams (ath, az, cws, wsh, sd, laa all match). So the live
-  slug is buildable directly: `aec-mlb-{away}-{home}-{ET-date}`.
-- NEXT (decisive): `mlb_live_probe.py` (commit 5ed7522) builds today's slugs from
-  StatsAPI and WS-subscribes to them BY SLUG (WS ignores what search listed).
-  Run DURING a live game:
-    cd /home/deploy/polymarket-discord-bot && git pull origin hardening
-    venv/bin/python mlb_live_probe.py ; cp mlb_live_probe_out.txt /root/
-  Download mlb_live_probe_out.txt. THE decisive line: "IN-PROGRESS games returning
-  a live book: N/M".
-    - N>0 -> an in-play MLB market EXISTS + is reachable; discovery was the only
-      blocker. THEN read the live spread/depth vs the Screen-1 bar (build the
-      collector off built-slugs, not search).
-    - N=0 with live games -> either doubleheader/alt slug form, OR Polymarket US
-      offers NO in-play MLB market (structural NO-GO). Check the SDK-surface dump
-      + alt-discovery (team-name search) sections in the output for another path.
+- **SCREEN 1 (LIQUIDITY): PASSED (07-19, live games).** In-play books are DEEP +
+  TIGHT — the opposite of tennis. SF@SEA & PIT@CLE (live 07-18): spreads 0.5c,
+  $1.5k–$180k resting within 2c/side (bar = >=~$100). Full detail in FINDINGS.md
+  "MLB — SCREEN 1: PASSED". Reached via `mlb_book_probe.py` (REST).
+- HOW TO REACH A LIVE MARKET (discovery solved):
+  - Search `query:"mlb"` EXCLUDES same-day markets (only lists games ~2-3 days
+    out) — do NOT use it for live. Build the slug instead:
+    StatsAPI `abbreviation`.lower() == Polymarket slug token for all 30 teams ->
+    `aec-mlb-{away}-{home}-{ET-date}`, then `pm.markets.retrieve_by_slug(slug)`.
+  - Clean PRICE = `pm.markets.bbo(slug)` (bestBid/bestAsk/currentPx/OI/shares) —
+    replaces the corrupted tennis marketSides price. Depth = `pm.markets.book(slug)`
+    ({"marketData":{"bids":[{"px":{"value":..},"qty":..}],"offers":[...]}}).
+  - Clean OUTCOME = StatsAPI final + status=Final. (`pm.markets.settlement` was
+    "not found" mid-game; don't rely on it.)
+  - WS lite feed (subscription_type 2) sends 0 frames for same-day slugs — it's
+    NOT a live in-play source for MLB; use the REST book. (`mlb_discover.py` /
+    `mlb_live_probe.py` WS probes are superseded for the live read.)
+- NEXT (decisive) = SCREEN 2 (efficiency/lag). Build `mlb_collect.py`: on a
+  schedule during live games, for each in-progress slug poll `bbo` (book mid) +
+  StatsAPI live winProbability (GET /api/v1/game/{gamePk}/winProbability, stamped
+  about.endTime) aligned in time, write clean JSONL; capture StatsAPI final as the
+  outcome. Run a few nights, then `analyze_mlb_lag.py` vs MLB_SCREEN.md Screen-2
+  bar (reuse `core.round_trip_cost` + the tennis lag/convergence method). PASS only
+  if fresh post-play divergences show PM LAGGING WP by >= the cost hurdle.
 
 ## FIRST MESSAGE FOR THE NEW WINDOW (paste this)
 "Continue the Sniperbot project. Tennis is ruled out (see HANDOFF.md + FINDINGS.md

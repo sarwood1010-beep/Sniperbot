@@ -135,38 +135,56 @@ def call_first_ok(fn, args_list):
     return None, None
 
 def parse_book(bk):
-    """Best-effort: pull (bids, asks) as lists of (price, size) from unknown shape."""
+    """Pull (bids, asks) as lists of (price, size). Real shape (confirmed):
+    {"marketData": {"bids": [{"px": {"value": "0.495"}, "qty": "181271.1"}, ...],
+                    "offers": [...]}}  -- asks live under 'offers', px is nested."""
     d = as_dict(bk) if not isinstance(bk, (list, dict)) else bk
-    if isinstance(d, list):  # maybe already levels
+    if isinstance(d, dict) and "marketData" in d:
+        d = as_dict(d["marketData"])
+    if not isinstance(d, dict):
         return None, None
     def side(*keys):
         for k in keys:
             v = d.get(k)
             if isinstance(v, list) and v: return v
         return []
-    bids = side("bids", "buys", "bid", "buy")
-    asks = side("asks", "sells", "ask", "sell")
+    bids = side("bids", "buys", "bid")
+    asks = side("offers", "asks", "sells", "ask")
     def norm(levels):
         out = []
         for lv in levels:
             ld = lv if isinstance(lv, dict) else {}
-            p = fnum(ld.get("price", ld.get("px", ld.get("p"))))
-            sz = fnum(ld.get("size", ld.get("shares", ld.get("quantity", ld.get("s")))))
+            p = fnum(ld.get("px", ld.get("price", ld.get("p"))))
+            sz = fnum(ld.get("qty", ld.get("size", ld.get("shares", ld.get("quantity")))))
             if p is not None and sz is not None: out.append((p, sz))
         return out
     return norm(bids), norm(asks)
 
+def walk_fill(levels, usd, is_buy):
+    """Avg fill price for a market order spending `usd`, walking best-first."""
+    lv = sorted(levels, key=lambda x: x[0], reverse=not is_buy)  # buy hits low asks
+    spent = shares = 0.0
+    for p, s in lv:
+        room = p * s
+        if spent + room >= usd:
+            shares += (usd - spent) / p; return usd / shares
+        spent += room; shares += s
+    return (spent / shares) if shares else None
+
 def screen1_depth(bids, asks):
-    """Print spread + $ resting within 2c of the touch (Screen-1 bar)."""
+    """Print spread + $ within 2c of the touch + $25/$50 fill walk (Screen-1 bar)."""
     if not bids or not asks:
         log("      (could not parse ladder -- see raw dump above)"); return
     bb = max(p for p, _ in bids); ba = min(p for p, _ in asks)
-    spread = ba - bb
-    # $ within 2c: bids >= bb-0.02 (buy-side liquidity), asks <= ba+0.02.
+    spread = ba - bb; mid = (bb + ba) / 2
     bid_usd = sum(p * s for p, s in bids if p >= bb - 0.02)
     ask_usd = sum(p * s for p, s in asks if p <= ba + 0.02)
     log(f"      best_bid={bb:.3f} best_ask={ba:.3f} spread={spread*100:.1f}c")
     log(f"      $ within 2c of touch:  bid-side=${bid_usd:,.0f}  ask-side=${ask_usd:,.0f}")
+    for usd in (25, 50):
+        buy = walk_fill(asks, usd, True); sell = walk_fill(bids, usd, False)
+        bs = f"{(buy-mid)*100:+.1f}c" if buy else "-"; ss = f"{(mid-sell)*100:+.1f}c" if sell else "-"
+        log(f"      ${usd:>3} order slip vs mid:  buy {bs}   sell {ss}")
     ok = spread <= 0.03 and min(bid_usd, ask_usd) >= 100
     log(f"      Screen-1 (<=3c AND >=~$100/side within 2c): {'PASS' if ok else 'below bar'}")
 
@@ -178,26 +196,21 @@ def probe_market(g, do_book=True):
     if m is None:
         log("  retrieve_by_slug FAILED for this slug."); return
     md = as_dict(m)
-    log(f"  status={md.get('status') or md.get('state')} OI={md.get('openInterest')} "
-        f"vol={md.get('volume')} id={md.get('id') or md.get('marketId')}")
-    log(f"  market raw: {jd(m, 900)}")
-    mkt_id = md.get("id") or md.get("marketId") or md.get("market_id")
-    sides = md.get("marketSides") or md.get("sides") or []
-    side_ids = [as_dict(s).get("id") or as_dict(s).get("sideId") for s in sides]
+    if isinstance(md.get("market"), dict): md = md["market"]  # unwrap {"market": {...}}
+    log(f"  StatsAPI status={g['status']}  id={md.get('id')}  question={md.get('question','')[:70]}")
     if not do_book:
         return
-    # bbo
-    lbl, bb = call_first_ok(pm.markets.bbo,
-        [("id", (mkt_id,), {}), ("slug", (slug,), {})])
-    if bb is not None: log(f"  bbo[{lbl}]: {jd(bb, 500)}")
-    # book -- try by market id, slug, and each side id
-    args = [("mkt_id", (mkt_id,), {}), ("slug", (slug,), {})]
-    for sid in side_ids:
-        if sid: args.append((f"side:{sid}", (sid,), {}))
-    lbl, bk = call_first_ok(pm.markets.book, args)
+    # bbo (one cheap call: clean bid/ask/currentPx/OI/sharesTraded)
+    _, bb = call_first_ok(pm.markets.bbo, [("slug", (slug,), {})])
+    if bb is not None:
+        bd = as_dict(bb); bd = as_dict(bd.get("marketData", bd))
+        log(f"  bbo: bid={jd(bd.get('bestBid'),40)} ask={jd(bd.get('bestAsk'),40)} "
+            f"cur={jd(bd.get('currentPx'),40)} OI={bd.get('openInterest')} traded={bd.get('sharesTraded')}")
+    # book (signature is book(slug) -> depth ladder)
+    _, bk = call_first_ok(pm.markets.book, [("slug", (slug,), {})])
     if bk is None:
-        log("  book: all arg forms failed (see errors above)."); return
-    log(f"  book[{lbl}] raw: {jd(bk, 1400)}")
+        log("  book failed (see errors above)."); return
+    log(f"  book raw: {jd(bk, 1200)}")
     bids, asks = parse_book(bk)
     screen1_depth(bids, asks)
 

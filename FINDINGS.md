@@ -39,6 +39,35 @@ Directly analyzed the downloaded log (8139 recs, 65-71 matches). Decisive:
 spend (cancel RapidAPI $29, do NOT buy Pinnacle). Reached for ~$0 trading loss.
 The hardened bot + analysis toolkit are reusable for another sport/venue.
 
+## MLB — SCREEN 1 (LIQUIDITY): PASSED (2026-07-19, live games)
+Probed the in-play book on Polymarket US during two live games (SF@SEA, PIT@CLE,
+07-18) via the REST `pm.markets.book`/`bbo` endpoints. Decisive contrast with
+tennis — the books are DEEP and TIGHT:
+- **PIT@CLE:** spread 0.5c; ~$169k (bid) / >$181k (ask) resting within 2c of touch.
+- **SF@SEA:** spread 0.5c; ~$14.8k (bid) / ~$1.55k (ask) within 2c; a $50 buy
+  fills at avg 0.373 vs 0.365 ask (~1.1c slip vs mid). At-the-touch size varies
+  (SF ask was only 4 shares) but within-2c depth is orders of magnitude over the
+  $100 bar. OI/volume real (SF: 331k shares traded, 273k OI).
+=> Both crush the Screen-1 bar (spread <=3c AND >=~$100/side within 2c). This is
+NOT tennis-thin (tennis was ~10-share books, >5c spreads). Real depth to trade
+size. Caveat: this is ONE snapshot of TWO games — the collector will confirm
+breadth across many innings/games, but the liquidity gate is clearly cleared.
+
+### What Screen 1 also SOLVED (the tennis data-quality holes)
+- **Discovery:** the `search.query({"query":"mlb"})` feed EXCLUDES same-day
+  markets (only lists games ~2-3 days out). But the slug is buildable directly:
+  StatsAPI `abbreviation`.lower() == the Polymarket slug token for all 30 teams,
+  so `aec-mlb-{away}-{home}-{ET-date}` + `pm.markets.retrieve_by_slug` reaches the
+  live market. (Team-abbr search also surfaces it as a fallback.)
+- **Clean price (fixes corrupted marketSides):** `pm.markets.bbo(slug)` returns
+  real bestBid/bestAsk/currentPx/openInterest/sharesTraded in one cheap call.
+- **Clean outcomes:** StatsAPI final score + status=Final (Polymarket's own
+  `settlement` endpoint returned "not found" mid/soon-after game — StatsAPI is the
+  outcome source, as planned).
+=> NEXT = Screen 2 (efficiency/lag): build `mlb_collect.py` (poll bbo mid +
+StatsAPI live WP + final outcome, matched by slug/date) over several nights, then
+`analyze_mlb_lag.py` vs the bar. Only if lag exists AND clears cost is there an edge.
+
 ## ROOT CAUSE FOUND — our market price + outcome data is corrupted
 Investigated the downloaded log (8139 recs, 71 matches) directly. Findings:
 - **market_p2 ~= market_p1 (mean |diff| 0.07), NOT complementary.** The two
