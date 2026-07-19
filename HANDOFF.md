@@ -81,6 +81,26 @@ Do NOT build heavy or spend money before the two cheap screens pass:
   needs a `User-Agent` header.
 - Memory files persist: `sniperbot-env.md`, `sniperbot-hardening.md`.
 
+## MLB PROGRESS (as of 2026-07-18)
+- `MLB_SCREEN.md` = go/no-go plan (MLB StatsAPI is free + publishes per-play win
+  probability -> free calibrated reference + clean outcomes). `mlb_discover.py` =
+  Screen-1 liquidity probe (read-only WS MARKET_DATA_LITE + depth-ladder type
+  probe). BUILT + committed.
+- First run (afternoon 07-18) found the full MLB slate but only FUTURE-dated
+  pre-game markets: `aec-mlb-{away}-{home}-{date}`, sides = FULL team names
+  ("San Francisco Giants" ...) -> clean StatsAPI match, no tennis-style ordering
+  pain. But no live game yet -> no real liquidity read.
+- NEXT (decisive): run `mlb_discover.py` DURING a LIVE game (evening ET /
+  ~23:00+ UTC). Commands (must cd into the repo first — fresh logins land in /root):
+    cd /home/deploy/polymarket-discord-bot && git pull origin hardening
+    venv/bin/python mlb_discover.py ; cp mlb_discover_out.txt /root/
+  Then user downloads mlb_discover_out.txt; interpret vs MLB_SCREEN.md Screen-1
+  bar. WATCH: the afternoon search returned only FUTURE games — CONFIRM the
+  in-progress game's market actually appears live; if not, tweak
+  `find_mlb_markets()` (may need is_today_slug-style filtering or a different
+  liveness signal). The type-probe result shows whether a full depth ladder
+  exists beyond top-of-book.
+
 ## FIRST MESSAGE FOR THE NEW WINDOW (paste this)
 "Continue the Sniperbot project. Tennis is ruled out (see HANDOFF.md + FINDINGS.md
 in C:\Users\a00579503\Documents\Sniperbot). Now evaluate MLB on Polymarket US.
