@@ -90,16 +90,25 @@ Do NOT build heavy or spend money before the two cheap screens pass:
   pre-game markets: `aec-mlb-{away}-{home}-{date}`, sides = FULL team names
   ("San Francisco Giants" ...) -> clean StatsAPI match, no tennis-style ordering
   pain. But no live game yet -> no real liquidity read.
+- `mlb_discover.py` NOW flags each market TODAY/YEST/OTHER by the ET date in the
+  slug (commit a17604f), sorts TODAY-first (so a live game is never truncated out
+  of the WS sub or the type-probe), and prints a loud WARNING if 0 markets are
+  dated today. So the afternoon "future-only" risk is instrumented, not silent.
 - NEXT (decisive): run `mlb_discover.py` DURING a LIVE game (evening ET /
   ~23:00+ UTC). Commands (must cd into the repo first — fresh logins land in /root):
     cd /home/deploy/polymarket-discord-bot && git pull origin hardening
     venv/bin/python mlb_discover.py ; cp mlb_discover_out.txt /root/
   Then user downloads mlb_discover_out.txt; interpret vs MLB_SCREEN.md Screen-1
-  bar. WATCH: the afternoon search returned only FUTURE games — CONFIRM the
-  in-progress game's market actually appears live; if not, tweak
-  `find_mlb_markets()` (may need is_today_slug-style filtering or a different
-  liveness signal). The type-probe result shows whether a full depth ladder
-  exists beyond top-of-book.
+  bar. READ THE OUTPUT IN THIS ORDER:
+    1. "markets dated TODAY" count > 0 and the live game listed [TODAY]? If 0 +
+       WARNING fires, the search isn't surfacing the in-progress game -> the
+       liquidity read is INVALID; fix find_mlb_markets() (broader query / a
+       different endpoint) before concluding anything.
+    2. Does the [TODAY] market actually TICK (ticks > 0 in the per-market table)?
+       A TODAY market with ~0 ticks is a parked pre-game book, not in-play.
+    3. Only on a live, ticking TODAY market: read spread / depth vs the Screen-1
+       bar, and the type-probe for whether a full depth ladder exists beyond
+       top-of-book. Advise go/no-go on building mlb_collect.py.
 
 ## FIRST MESSAGE FOR THE NEW WINDOW (paste this)
 "Continue the Sniperbot project. Tennis is ruled out (see HANDOFF.md + FINDINGS.md
