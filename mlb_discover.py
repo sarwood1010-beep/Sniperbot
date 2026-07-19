@@ -139,8 +139,14 @@ async def collect_mdl(slugs, seconds=90):
             await ws.send(json.dumps(sub))
             log(f"[ws] subscribed {len(slugs)} MLB markets (type 2), collecting {seconds}s...")
             end = time.time() + seconds
-            async for raw in ws:
-                if time.time() >= end:
+            # wait_for, not `async for`: a silent server (0 frames) would block the
+            # async iterator forever and never re-check the deadline.
+            while time.time() < end:
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=min(5.0, max(0.2, end - time.time())))
+                except asyncio.TimeoutError:
+                    continue
+                except Exception:
                     break
                 if isinstance(raw, dict): raw = json.dumps(raw)
                 if '"heartbeat"' in raw:

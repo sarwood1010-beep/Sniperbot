@@ -182,8 +182,18 @@ async def probe_slugs(games, seconds=75):
             await ws.send(json.dumps(sub))
             log(f"\n[ws] subscribed {len(slugs)} same-day slugs (type 2), collecting {seconds}s...")
             end = time.time() + seconds
-            async for raw in ws:
-                if time.time() >= end: break
+            frames = 0
+            # NOTE: use wait_for, not `async for` -- if the server sends zero
+            # frames (same-day slugs don't broadcast on the lite feed) the async
+            # iterator blocks forever and the time check never fires.
+            while time.time() < end:
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=min(5.0, max(0.2, end - time.time())))
+                except asyncio.TimeoutError:
+                    continue
+                except Exception as e:
+                    log("[ws] recv ended:", repr(e)[:120]); break
+                frames += 1
                 if isinstance(raw, dict): raw = json.dumps(raw)
                 if '"heartbeat"' in raw:
                     try: await ws.send(json.dumps({"heartbeat": {}}))
@@ -202,6 +212,9 @@ async def probe_slugs(games, seconds=75):
                     st["min_spread"] = sp if st["min_spread"] is None else min(st["min_spread"], sp)
                 if rec["ask_depth"] is not None: st["ad"].append(rec["ask_depth"])
                 if rec["bid_depth"] is not None: st["bd"].append(rec["bid_depth"])
+            if frames == 0:
+                log("[ws] 0 frames received -- same-day slugs do NOT broadcast on"
+                    " the lite WS. Use the REST book (mlb_book_probe.py) instead.")
     except Exception as e:
         log("[ws] probe error:", repr(e)[:200])
     return stats
