@@ -133,11 +133,19 @@ Do NOT build heavy or spend money before the two cheap screens pass:
   |gap| median 2.8pts, no closing lag. Small stable PM<WP ~2pt bias (< cost; watch,
   don't chase). Full detail in FINDINGS.md "Screen 2 — FIRST READ".
 - WHY THIN + THE FIX: collection started 10:36pm ET, so most games were already
-  Final (only 4 had live ticks). **Next run: start the collector FROM FIRST PITCH**
-  (~6-7pm ET) and run 5-6h to capture 15+ games' full arcs incl. close games:
-    nohup venv/bin/python mlb_collect.py 360 20 > mlb_collect.log 2>&1 &
+  Final (only 4 had live ticks). **Start the collector BEFORE first pitch** and run
+  long enough to cover the slate:
+    nohup venv/bin/python mlb_collect.py 480 20 > mlb_collect.log 2>&1 &
   Collect a few such nights -> re-run analyze_mlb_lag.py -> read vs the Screen-2 bar.
   (Analyzer auto-drops doubleheaders + dedups restart re-emissions.)
+- SECOND HYPOTHESIS (free, same data): `mlb_collect.py` now ALSO polls PRE-GAME
+  markets (game_state="pregame") and logs OI/price + flags >=10% openInterest jumps
+  live. Tests "smart-money" order-flow: does a big pre-game OI jump precede PM price
+  CONTINUATION (edge) or is it efficient? In-play proxy on the first file showed
+  post-volume-spike REVERSION not continuation (5 cont / 16 rev, tiny n) — pregame
+  (info-driven) is the real untested case. TODO: `analyze_mlb_orderflow.py` (detect
+  OI-jump events by game_state, measure forward price drift; optionally corroborate
+  with a free odds-feed line move to separate "smart" from "big-but-dumb").
 
 ## FIRST MESSAGE FOR THE NEW WINDOW (paste this)
 "Continue the Sniperbot project. Tennis is ruled out (see HANDOFF.md + FINDINGS.md

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""mlb_collect.py -- READ-ONLY Screen-2 collector for MLB on Polymarket US. Places
-NO orders. Gathers the clean, timestamped data the lag/efficiency test needs.
+"""mlb_collect.py -- READ-ONLY collector for MLB on Polymarket US. Places NO orders.
+Gathers clean, timestamped data to test TWO edge hypotheses from one run:
+  (A) IN-PLAY lag: does PM price lag the StatsAPI live win-prob? (Screen 2)
+  (B) PRE-GAME order-flow: does a big pre-game openInterest jump ("smart money")
+      precede PM price continuation? Poll pregame OI/price; flag >=10% OI jumps.
+Every tick is tagged game_state = "live" | "pregame" so analysis can split them.
 
 Screen 2 (see MLB_SCREEN.md) asks: does the Polymarket in-play price LAG the
 StatsAPI live win-probability (edge) or track it (efficient, like tennis)? The
@@ -99,11 +103,14 @@ def schedule(date):
         out.append({
             "gamePk": g.get("gamePk"), "away": aw, "home": hm, "status": st,
             "live": st in ("In Progress", "Manager challenge"),
-            "final": st == "Final",
+            "final": st in ("Final", "Game Over", "Completed Early"),
+            "pregame": st in ("Scheduled", "Pre-Game", "Pre Game", "Warmup",
+                              "Delayed Start", "Delayed", "Delayed: Rain"),
             "inning": ls.get("currentInning"), "half": ls.get("inningState"),
             "away_score": (ls.get("teams", {}).get("away", {}) or {}).get("runs"),
             "home_score": (ls.get("teams", {}).get("home", {}) or {}).get("runs"),
             "outs": ls.get("outs"),
+            "start": g.get("gameDate"),  # ISO first-pitch time (UTC)
             "slug": f"aec-mlb-{aw}-{hm}-{date}",
         })
     return out
@@ -141,16 +148,18 @@ def bbo(slug):
         "askDepth": d.get("askDepth"), "bidDepth": d.get("bidDepth"),
     }
 
-def poll_game(g):
-    poll_ts = now_utc().isoformat()
-    rec = {"type": "tick", "poll_ts": poll_ts, "slug": g["slug"],
+def poll_game(g, state):
+    """state = 'live' or 'pregame'. WP is only fetched live (no plays pre-game)."""
+    rec = {"type": "tick", "poll_ts": now_utc().isoformat(), "slug": g["slug"],
            "gamePk": g["gamePk"], "away": g["away"], "home": g["home"],
-           "status": g["status"], "inning": g["inning"], "half": g["half"],
+           "status": g["status"], "game_state": state, "start": g.get("start"),
+           "inning": g["inning"], "half": g["half"],
            "away_score": g["away_score"], "home_score": g["home_score"],
            "outs": g["outs"], "price_side": "away"}
     rec.update(bbo(g["slug"]))
-    wp = latest_wp(g["gamePk"])
-    if wp: rec.update(wp)
+    if state == "live":
+        wp = latest_wp(g["gamePk"])
+        if wp: rec.update(wp)
     emit(rec)
     return rec
 
@@ -175,6 +184,12 @@ def main():
     end = time.time() + minutes * 60
     settled = set()
     ticks = 0
+    prev_oi = {}   # slug -> last openInterest, to flag >=10% jumps live
+    def oi_flag(slug, oi):
+        p = prev_oi.get(slug)
+        d = (100.0 * (oi - p) / p) if (oi and p) else 0.0
+        if oi: prev_oi[slug] = oi
+        return d, ("  <== OI +%.0f%%" % d if abs(d) >= 10 else "")
     while time.time() < end:
         loop_start = time.time()
         date = et_date()
@@ -183,26 +198,38 @@ def main():
         except Exception as e:
             log("schedule loop err:", e); games = []
         live = [g for g in games if g["live"]]
+        pregame = [g for g in games if g.get("pregame")]
         # settlement records for games that just went Final
         for g in games:
             if g["final"] and g["slug"] not in settled:
                 r = settle(g); settled.add(g["slug"])
                 log(f"SETTLED {g['slug']} winner={r['winner']} "
                     f"{g['away_score']}-{g['home_score']} finalPx={r.get('currentPx')}")
+        # LIVE polls (WP-lag hypothesis)
         for g in live:
             try:
-                r = poll_game(g); ticks += 1
+                r = poll_game(g, "live"); ticks += 1
                 gap = None
                 if r.get("currentPx") is not None and r.get("wp_away") is not None:
                     gap = r["currentPx"] - r["wp_away"] / 100.0
-                log(f"{g['slug'][:26]:26} {g['half'] or '':6} {g['inning'] or '?'} "
-                    f"{g['away_score']}-{g['home_score']}  bid={r.get('best_bid')} "
-                    f"ask={r.get('best_ask')} cur={r.get('currentPx')} "
-                    f"wpAway={r.get('wp_away')} gap={None if gap is None else round(gap,3)}")
+                _, of = oi_flag(g["slug"], r.get("oi"))
+                log(f"LIVE {g['slug'][:24]:24} {g['half'] or '':6} {g['inning'] or '?'} "
+                    f"{g['away_score']}-{g['home_score']}  cur={r.get('currentPx')} "
+                    f"wpAway={r.get('wp_away')} gap={None if gap is None else round(gap,3)}{of}")
             except Exception as e:
                 log(f"poll err {g['slug']}: {repr(e)[:120]}")
-        if not live:
-            log(f"no live games ({len(games)} on slate). waiting...")
+        # PRE-GAME polls (order-flow / smart-money hypothesis)
+        for g in pregame:
+            try:
+                r = poll_game(g, "pregame"); ticks += 1
+                d, of = oi_flag(g["slug"], r.get("oi"))
+                log(f"PRE  {g['slug'][:24]:24} start={str(g.get('start'))[11:16]} "
+                    f"bid={r.get('best_bid')} ask={r.get('best_ask')} cur={r.get('currentPx')} "
+                    f"oi={r.get('oi')} vol={r.get('shares')}{of}")
+            except Exception as e:
+                log(f"poll err {g['slug']}: {repr(e)[:120]}")
+        if not live and not pregame:
+            log(f"no live/pregame games ({len(games)} on slate). waiting...")
         # sleep the remainder of the interval
         dt = interval - (time.time() - loop_start)
         if dt > 0 and time.time() + dt < end:
