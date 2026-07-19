@@ -7,6 +7,12 @@ pregame_snap.json
 order_capture.jsonl
 measurement_log.jsonl
 
+# ─── MLB screen outputs / collected data (droplet-only; downloaded, not tracked) ─
+mlb_data.jsonl
+mlb_discover_out.txt
+mlb_live_probe_out.txt
+mlb_book_probe_out.txt
+
 # ─── Legacy scratch / build artifacts (predate this .gitignore) ──────
 build_*.py
 build bot v3
