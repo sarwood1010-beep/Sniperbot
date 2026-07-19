@@ -85,6 +85,28 @@ reprice within seconds of a run. So:
   Screen 2. Collector records 3 clocks (poll_ts, wp_endTime, score/inning) so the
   analysis can separate efficiency from reference lag.
 
+### Screen 2 — FIRST READ (07-19, leans EFFICIENT; NOT a verdict, sample too thin)
+`analyze_mlb_lag.py` on the first overnight file (744 ticks). Coverage was thin
+because collection STARTED 10:36pm ET -- most of the slate was already Final, so
+only 4 games had live tick series (1 doubleheader dropped, 2 blowouts pinned near
+0/100, leaving SF@SEA as the one game with real two-sided movement, an extra-
+innings tie).
+- **0 fresh divergences (|gap|>=6pts) across 11 WP-jump events.** When a run/big-
+  out repriced WP, PM was ALREADY within 6pts -- no tradeable lag appeared.
+- **SF@SEA: PM shadows WP ~1:1.** As wpAway swung 39->50->44->36->50->32->20, PM
+  tracked it with |gap| median 2.8pts (p90 9.8), and no fresh gap CLOSED (converge
+  ~9%). A small STABLE bias PM(away) ~2pts BELOW WP -- but a stable offset is not a
+  lag (doesn't converge) and 2pts < the ~1.5-3c round-trip cost. Not tradeable.
+- Looks like the tennis efficiency result (market tracks the reference, doesn't lag
+  it), consistent with the deep-book prior. BUT this is ~1 moving game; the bar
+  needs >=15 distinct games with full arcs. **Data-quality all validated**
+  (price_side=away confirmed by 12 clean settlements; bbo mid tracks the game).
+- DECISIVE NEXT: collect a FULL evening slate FROM FIRST PITCH (start ~6-7pm ET,
+  run 5-6h) to get 15+ games incl. many close ones with real scoring-play
+  divergences. Only then read the Screen-2 bar. WATCH the small PM<WP bias across
+  more data (if it's persistent + calibrated + > cost it'd be a static-mispricing
+  edge, distinct from a lag -- but 2pts is below cost, so: watch, don't chase).
+
 ## ROOT CAUSE FOUND — our market price + outcome data is corrupted
 Investigated the downloaded log (8139 recs, 71 matches) directly. Findings:
 - **market_p2 ~= market_p1 (mean |diff| 0.07), NOT complementary.** The two

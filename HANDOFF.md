@@ -127,10 +127,17 @@ Do NOT build heavy or spend money before the two cheap screens pass:
   the correct test measures PM's move AFTER WP has jumped; any residual PM lag is a
   lag BEYOND ~30s = robust/tradeable. See FINDINGS.md "Screen 2 — the TIMING
   subtlety". Deep books (Screen 1) mean the PRIOR is "probably efficient".
-- TODO: `analyze_mlb_lag.py` — once a data file exists, build it to fit the real
-  records (reuse `core.round_trip_cost` + the tennis lag/convergence method):
-  detect fresh WP jumps, measure PM gap_closed / converge_rate over 1-10 min,
-  net vs cost hurdle, vs the MLB_SCREEN.md Screen-2 bar.
+- `analyze_mlb_lag.py` BUILT + run on the first overnight file. FIRST READ leans
+  EFFICIENT but is NOT a verdict (sample too thin): 0 fresh divergences over 11 WP
+  jumps; the one moving game (SF@SEA, extra innings) had PM shadowing WP ~1:1,
+  |gap| median 2.8pts, no closing lag. Small stable PM<WP ~2pt bias (< cost; watch,
+  don't chase). Full detail in FINDINGS.md "Screen 2 — FIRST READ".
+- WHY THIN + THE FIX: collection started 10:36pm ET, so most games were already
+  Final (only 4 had live ticks). **Next run: start the collector FROM FIRST PITCH**
+  (~6-7pm ET) and run 5-6h to capture 15+ games' full arcs incl. close games:
+    nohup venv/bin/python mlb_collect.py 360 20 > mlb_collect.log 2>&1 &
+  Collect a few such nights -> re-run analyze_mlb_lag.py -> read vs the Screen-2 bar.
+  (Analyzer auto-drops doubleheaders + dedups restart re-emissions.)
 
 ## FIRST MESSAGE FOR THE NEW WINDOW (paste this)
 "Continue the Sniperbot project. Tennis is ruled out (see HANDOFF.md + FINDINGS.md
