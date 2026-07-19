@@ -94,21 +94,29 @@ Do NOT build heavy or spend money before the two cheap screens pass:
   slug (commit a17604f), sorts TODAY-first (so a live game is never truncated out
   of the WS sub or the type-probe), and prints a loud WARNING if 0 markets are
   dated today. So the afternoon "future-only" risk is instrumented, not silent.
-- NEXT (decisive): run `mlb_discover.py` DURING a LIVE game (evening ET /
-  ~23:00+ UTC). Commands (must cd into the repo first — fresh logins land in /root):
+- LIVE RUN (07-19 00:28 UTC = 20:28 ET 07-18) RESULT — search discovery is
+  BROKEN for live markets. `mlb_discover.py` returned 41 markets, ALL dated
+  07-20/07-21 (future); 0 dated today. StatsAPI confirmed SF@SEA and PIT@CLE(g2)
+  were IN PROGRESS at that moment, yet NO same-day (07-18) market appeared at all
+  — not live, final, or pre-game. So `search.query({"query":"mlb"})` EXCLUDES
+  same-day markets; it only lists games ~2-3 days out. => The search is the wrong
+  discovery path, and we have NOT yet confirmed an in-play MLB market even EXISTS.
+- KEY ENABLER found: each team's StatsAPI `abbreviation`.lower() == the Polymarket
+  slug token for all 30 teams (ath, az, cws, wsh, sd, laa all match). So the live
+  slug is buildable directly: `aec-mlb-{away}-{home}-{ET-date}`.
+- NEXT (decisive): `mlb_live_probe.py` (commit 5ed7522) builds today's slugs from
+  StatsAPI and WS-subscribes to them BY SLUG (WS ignores what search listed).
+  Run DURING a live game:
     cd /home/deploy/polymarket-discord-bot && git pull origin hardening
-    venv/bin/python mlb_discover.py ; cp mlb_discover_out.txt /root/
-  Then user downloads mlb_discover_out.txt; interpret vs MLB_SCREEN.md Screen-1
-  bar. READ THE OUTPUT IN THIS ORDER:
-    1. "markets dated TODAY" count > 0 and the live game listed [TODAY]? If 0 +
-       WARNING fires, the search isn't surfacing the in-progress game -> the
-       liquidity read is INVALID; fix find_mlb_markets() (broader query / a
-       different endpoint) before concluding anything.
-    2. Does the [TODAY] market actually TICK (ticks > 0 in the per-market table)?
-       A TODAY market with ~0 ticks is a parked pre-game book, not in-play.
-    3. Only on a live, ticking TODAY market: read spread / depth vs the Screen-1
-       bar, and the type-probe for whether a full depth ladder exists beyond
-       top-of-book. Advise go/no-go on building mlb_collect.py.
+    venv/bin/python mlb_live_probe.py ; cp mlb_live_probe_out.txt /root/
+  Download mlb_live_probe_out.txt. THE decisive line: "IN-PROGRESS games returning
+  a live book: N/M".
+    - N>0 -> an in-play MLB market EXISTS + is reachable; discovery was the only
+      blocker. THEN read the live spread/depth vs the Screen-1 bar (build the
+      collector off built-slugs, not search).
+    - N=0 with live games -> either doubleheader/alt slug form, OR Polymarket US
+      offers NO in-play MLB market (structural NO-GO). Check the SDK-surface dump
+      + alt-discovery (team-name search) sections in the output for another path.
 
 ## FIRST MESSAGE FOR THE NEW WINDOW (paste this)
 "Continue the Sniperbot project. Tennis is ruled out (see HANDOFF.md + FINDINGS.md
