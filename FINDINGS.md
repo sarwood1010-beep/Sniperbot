@@ -64,9 +64,26 @@ breadth across many innings/games, but the liquidity gate is clearly cleared.
 - **Clean outcomes:** StatsAPI final score + status=Final (Polymarket's own
   `settlement` endpoint returned "not found" mid/soon-after game — StatsAPI is the
   outcome source, as planned).
-=> NEXT = Screen 2 (efficiency/lag): build `mlb_collect.py` (poll bbo mid +
-StatsAPI live WP + final outcome, matched by slug/date) over several nights, then
-`analyze_mlb_lag.py` vs the bar. Only if lag exists AND clears cost is there an edge.
+=> NEXT = Screen 2 (efficiency/lag): `mlb_collect.py` (BUILT) polls bbo mid +
+StatsAPI live WP + final outcome, matched by slug/date; then `analyze_mlb_lag.py`
+(TODO) vs the bar. Only if lag exists AND clears cost is there an edge.
+
+### Screen 2 — the TIMING subtlety (critical, measured 2026-07-19)
+The reference (StatsAPI live WP) is ~**20-45s behind wall-clock** (latest WP play's
+about.endTime vs now, measured across 4 live games). PM traders watch live TV and
+reprice within seconds of a run. So:
+- A naive "does PM converge to WP?" test would show PM LEADING WP by ~30s -- but
+  that is a REFERENCE-LATENCY ARTIFACT, not true efficiency (the tennis-style
+  false negative). Do NOT read "PM leads WP" as "no edge" without accounting for it.
+- CORRECT test: measure PM's move AFTER StatsAPI's WP has already jumped. Since the
+  reference is ~30s stale, ANY residual PM lag is a lag BEYOND 30s -- large, robust,
+  tradeable. If PM has already moved by the time StatsAPI catches up -> efficient ->
+  clean NO-GO. So the delay makes a DETECTED lag more credible while hiding small
+  ones: Screen 2 surfaces only edges worth trading.
+- The prior is still "probably efficient" -- deep/liquid markets (Screen 1 showed
+  $180k books) are usually well-arbitraged. Screen 1 passing RAISES the bar for
+  Screen 2. Collector records 3 clocks (poll_ts, wp_endTime, score/inning) so the
+  analysis can separate efficiency from reference lag.
 
 ## ROOT CAUSE FOUND — our market price + outcome data is corrupted
 Investigated the downloaded log (8139 recs, 71 matches) directly. Findings:

@@ -113,13 +113,24 @@ Do NOT build heavy or spend money before the two cheap screens pass:
   - WS lite feed (subscription_type 2) sends 0 frames for same-day slugs — it's
     NOT a live in-play source for MLB; use the REST book. (`mlb_discover.py` /
     `mlb_live_probe.py` WS probes are superseded for the live read.)
-- NEXT (decisive) = SCREEN 2 (efficiency/lag). Build `mlb_collect.py`: on a
-  schedule during live games, for each in-progress slug poll `bbo` (book mid) +
-  StatsAPI live winProbability (GET /api/v1/game/{gamePk}/winProbability, stamped
-  about.endTime) aligned in time, write clean JSONL; capture StatsAPI final as the
-  outcome. Run a few nights, then `analyze_mlb_lag.py` vs MLB_SCREEN.md Screen-2
-  bar (reuse `core.round_trip_cost` + the tennis lag/convergence method). PASS only
-  if fresh post-play divergences show PM LAGGING WP by >= the cost hurdle.
+- SCREEN 2 (efficiency/lag) — IN PROGRESS. `mlb_collect.py` BUILT + committed
+  (StatsAPI half tested live). Run on the droplet DURING live games:
+    cd /home/deploy/polymarket-discord-bot && git pull origin hardening
+    venv/bin/python mlb_collect.py 120 20   # run 120 min, poll 20s; safe to Ctrl-C
+    cp mlb_data.jsonl /root/                 # then user downloads it
+  Records (JSONL): type=tick {poll_ts, slug, gamePk, best_bid/ask, currentPx,
+  wp_home/away, wp_endTime, inning/half/score} and type=settlement {winner, final
+  score, final book}. price_side="away" ASSUMED (currentPx~=P(away)); analysis
+  self-calibrates via settlement (winner px -> ~1.0). Collect a few nights.
+- CRITICAL for the analysis (measured 07-19): StatsAPI WP is ~20-45s behind wall-
+  clock. So "PM leads WP" is likely a REFERENCE-LATENCY ARTIFACT, not efficiency —
+  the correct test measures PM's move AFTER WP has jumped; any residual PM lag is a
+  lag BEYOND ~30s = robust/tradeable. See FINDINGS.md "Screen 2 — the TIMING
+  subtlety". Deep books (Screen 1) mean the PRIOR is "probably efficient".
+- TODO: `analyze_mlb_lag.py` — once a data file exists, build it to fit the real
+  records (reuse `core.round_trip_cost` + the tennis lag/convergence method):
+  detect fresh WP jumps, measure PM gap_closed / converge_rate over 1-10 min,
+  net vs cost hurdle, vs the MLB_SCREEN.md Screen-2 bar.
 
 ## FIRST MESSAGE FOR THE NEW WINDOW (paste this)
 "Continue the Sniperbot project. Tennis is ruled out (see HANDOFF.md + FINDINGS.md
