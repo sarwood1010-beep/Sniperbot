@@ -19,7 +19,7 @@ books look like tennis (token quotes ~10 shares, spread routinely > 5c).
 Run:  venv/bin/python mlb_discover.py
 """
 import os, sys, json, time, base64, asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 try:
     from dotenv import load_dotenv
@@ -64,11 +64,26 @@ def fv(o):
     try: return float(o)
     except Exception: return None
 
+# ET is UTC-4 in July (EDT); the slug date == the game's ET date.
+_now_et = datetime.now(timezone.utc) - timedelta(hours=4)
+TODAY_ET = _now_et.strftime("%Y-%m-%d")
+YEST_ET = (_now_et - timedelta(days=1)).strftime("%Y-%m-%d")
+
+def slug_liveness(slug):
+    """Best-effort live/future flag from the date embedded in the slug
+    (aec-mlb-{away}-{home}-{date}). Team-token shape is not assumed -- we just
+    look for today's/yesterday's ET date string. A TODAY-dated market is a
+    candidate LIVE game; whether it actually TICKS on the WS is the real
+    in-play signal (a parked pre-game book won't tick)."""
+    if TODAY_ET in slug: return "TODAY"
+    if YEST_ET in slug: return "YEST"
+    return "OTHER"
+
 def find_mlb_markets():
-    """List live aec-mlb-* markets via REST search."""
+    """List open aec-mlb-* markets via REST search, flagged live(TODAY)/future."""
     out = {}
     try:
-        r = pm.search.query({"query": "mlb", "limit": 50})
+        r = pm.search.query({"query": "mlb", "limit": 100})
         events = []
         if isinstance(r, dict):
             for v in r.values():
@@ -86,8 +101,13 @@ def find_mlb_markets():
             if not slug.startswith("aec-mlb-") or mkt.get("closed"):
                 continue
             sides = [s.get("description", "?") for s in (mkt.get("marketSides") or [])]
+            # capture whatever liveness-ish fields exist (field names unknown --
+            # keep only those present, so tonight's output tells us what's live).
+            state = {k: mkt[k] for k in ("status", "state", "active", "live",
+                     "gameStartTime", "startTime", "startDate") if k in mkt}
             out[slug] = {"title": title, "sides": sides,
-                         "oi": mkt.get("openInterest"), "vol": mkt.get("volume")}
+                         "oi": mkt.get("openInterest"), "vol": mkt.get("volume"),
+                         "live": slug_liveness(slug), "state": state}
     return out
 
 def parse_mdl(raw):
@@ -179,12 +199,22 @@ async def main():
     if not (key_id and secret):
         log("!! no Polymarket US creds in env -- run on the droplet."); return
     markets = find_mlb_markets()
-    log(f"live aec-mlb-* markets found: {len(markets)}")
+    log(f"open aec-mlb-* markets found: {len(markets)}   (ET today={TODAY_ET})")
     if not markets:
-        log("No live MLB markets right now. Run during a live game (evening ET)."); return
-    for s, m in list(markets.items())[:30]:
-        log(f"  {s[:44]:44} OI={m['oi']} vol={m['vol']} sides={m['sides']}")
-    slugs = list(markets.keys())[:20]
+        log("No open MLB markets right now. Run during a live game (evening ET)."); return
+    # Sort TODAY-dated (candidate live) first so they are never truncated out of
+    # the WS subscription / type-probe below.
+    order = {"TODAY": 0, "YEST": 1, "OTHER": 2}
+    ordered = sorted(markets.items(), key=lambda kv: order.get(kv[1]["live"], 3))
+    n_today = sum(1 for _, m in ordered if m["live"] == "TODAY")
+    log(f"markets dated TODAY (candidate live games): {n_today}")
+    if n_today == 0:
+        log("!! WARNING: 0 markets dated today. The in-progress game is NOT")
+        log("!! surfacing from the search -- find_mlb_markets() needs a tweak")
+        log("!! (broader query / different endpoint) before the liquidity read is valid.")
+    for s, m in ordered[:30]:
+        log(f"  [{m['live']:5}] {s[:44]:44} OI={m['oi']} vol={m['vol']} state={m['state']} sides={m['sides']}")
+    slugs = [s for s, _ in ordered][:20]
     stats = await collect_mdl(slugs, seconds=90)
     log("\n=== per-market top-of-book liquidity (from MARKET_DATA_LITE) ===")
     log(f"{'slug':44} {'ticks':>5} {'avg_spread':>10} {'min_sp':>7} {'askDepth':>8} {'bidDepth':>8}")
