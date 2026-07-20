@@ -86,8 +86,14 @@ def schedule(date):
     return out
 
 # ---- Kalshi ----------------------------------------------------------------
+_MONS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+def to_date7(d):  # '2026-07-20' -> '26JUL20' (Kalshi ticker date, in ET)
+    y, m, dd = d.split("-"); return f"{y[2:]}{_MONS[int(m)-1]}{dd}"
+
 def kalshi_index():
-    """(matchup, side) -> market dict, over all open KXMLBGAME markets (paged)."""
+    """(date7, matchup, side) -> market, over all open KXMLBGAME markets (paged).
+    Keying by DATE avoids matching a live game to a same-matchup future series game
+    or the other half of a doubleheader."""
     idx = {}; cursor = ""
     for _ in range(6):
         u = f"{KB}/markets?series_ticker=KXMLBGAME&status=open&limit=200"
@@ -96,14 +102,15 @@ def kalshi_index():
         for m in d.get("markets", []):
             parts = m.get("ticker", "").split("-")
             if len(parts) < 3: continue
-            mm = re.match(r"^\d{2}[A-Z]{3}\d{2}\d{4}(.+)$", parts[1])
-            idx[(mm.group(1) if mm else parts[1], parts[2])] = m
+            mm = re.match(r"^(\d{2}[A-Z]{3}\d{2})\d{4}(.+)$", parts[1])  # date7 + matchup
+            if not mm: continue
+            idx[(mm.group(1), mm.group(2), parts[2])] = m
         cursor = d.get("cursor") or ""
         if not cursor: break
     return idx
 
-def kalshi_quote(idx, away, home):
-    m = idx.get((away.upper() + home.upper(), away.upper()))  # P(away) market
+def kalshi_quote(idx, away, home, date):
+    m = idx.get((to_date7(date), away.upper() + home.upper(), away.upper()))  # P(away)
     if not m: return None
     return {"k_bid": fnum(m.get("yes_bid_dollars")), "k_ask": fnum(m.get("yes_ask_dollars")),
             "k_last": fnum(m.get("last_price_dollars")), "k_vol": fnum(m.get("volume_fp")),
@@ -136,7 +143,8 @@ def main():
             rec = {"poll_ts": now_utc().isoformat(), "slug": g["slug"], "gamePk": g["gamePk"],
                    "away": g["away"], "home": g["home"], "inning": g["inning"], "half": g["half"]}
             rec.update(pm_quote(g["slug"]))
-            kq = kalshi_quote(kidx, g["away"], g["home"])
+            gdate = "-".join(g["slug"].split("-")[-3:])  # date from the slug
+            kq = kalshi_quote(kidx, g["away"], g["home"], gdate)
             if kq: rec.update(kq)
             pm_m = mid(rec.get("pm_bid"), rec.get("pm_ask"))
             k_m = mid(rec.get("k_bid"), rec.get("k_ask"))
