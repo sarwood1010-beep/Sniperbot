@@ -81,6 +81,8 @@ def schedule(date):
         ls = g.get("linescore", {})
         out.append({"gamePk": g.get("gamePk"), "away": aw, "home": hm, "status": st,
                     "live": st in ("In Progress", "Manager challenge"),
+                    "pregame": st in ("Scheduled", "Pre-Game", "Pre Game", "Warmup",
+                                      "Delayed Start", "Delayed", "Delayed: Rain"),
                     "inning": ls.get("currentInning"), "half": ls.get("inningState"),
                     "slug": f"aec-mlb-{aw}-{hm}-{date}"})
     return out
@@ -137,11 +139,12 @@ def main():
     while time.time() < end:
         loop = time.time()
         games = schedule(et_date())
-        live = [g for g in games if g["live"]]
+        pollable = [g for g in games if g["live"] or g.get("pregame")]
         kidx = kalshi_index()
-        for g in live:
+        for g in pollable:
             rec = {"poll_ts": now_utc().isoformat(), "slug": g["slug"], "gamePk": g["gamePk"],
-                   "away": g["away"], "home": g["home"], "inning": g["inning"], "half": g["half"]}
+                   "away": g["away"], "home": g["home"], "inning": g["inning"], "half": g["half"],
+                   "game_state": "live" if g["live"] else "pregame"}
             rec.update(pm_quote(g["slug"]))
             gdate = "-".join(g["slug"].split("-")[-3:])  # date from the slug
             kq = kalshi_quote(kidx, g["away"], g["home"], gdate)
@@ -157,11 +160,12 @@ def main():
             emit(rec); n += 1
             best = max([x for x in (rec.get("arb_buyPM_sellK"), rec.get("arb_buyK_sellPM")) if x is not None], default=None)
             flag = f"  <== ARB {best*100:+.1f}c" if (best is not None and best > 0) else ""
-            log(f"{g['slug'][:24]:24} {g['half'] or '':6}{g['inning'] or '?'} "
+            tag = "LIVE" if g["live"] else "PRE "
+            log(f"{tag} {g['slug'][:24]:24} "
                 f"PM[{rec.get('pm_bid')}/{rec.get('pm_ask')}] K[{rec.get('k_bid')}/{rec.get('k_ask')}] "
                 f"gap={None if rec['gap_mid'] is None else round(rec['gap_mid'],3)}{flag}")
-        if not live:
-            log(f"no live games ({len(games)} on slate). waiting...")
+        if not pollable:
+            log(f"no live/pregame games ({len(games)} on slate). waiting...")
         dt = interval - (time.time() - loop)
         if dt > 0 and time.time() + dt < end: time.sleep(dt)
         elif dt > 0: break
