@@ -37,3 +37,5 @@ venv/
 # NOTE: do NOT ignore test_*.py — the real suite lives in tests/ and must
 # be tracked. Scratch scripts named test.py / test2.py / test3.py have been
 # removed; pytest is scoped to tests/ via pyproject.toml.
+mlb_xvenue.jsonl
+mlb_xvenue.log

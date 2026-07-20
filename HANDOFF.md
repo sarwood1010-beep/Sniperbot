@@ -168,6 +168,31 @@ Recommendation: call MLB done; decide 1 vs a scoped test of 3/4 with the user. D
 NOT reflexively collect more nights — the signals aren't borderline (converge 46%
 vs 60% bar; OI jumps move price 12%), more data won't flip them.
 
+## PURSUING IDEA #1 — cross-venue arb (Polymarket US vs KALSHI). IN PROGRESS.
+Different mechanism: not "PM lags a reference" (dead) but "two tradeable US venues
+DISAGREE on the same game-winner binary" — model-free, speed-insensitive (a
+standing gap is capturable at leisure), both legs tradeable (unlike Pinnacle).
+Confirmed (2026-07-19, all free from the LOCAL box — Kalshi needs no droplet):
+- **Kalshi public API**: `https://api.elections.kalshi.com/trade-api/v2` (no auth,
+  not geo-blocked). Series `KXMLBGAME` = per-game winner, one market per SIDE.
+  Ticker `KXMLBGAME-{YYMONDDHHMM}{MATCHUP}-{SIDE}`; team codes == StatsAPI abbr
+  (MIA,CWS,SD,ATH,AZ,WSH...). P(away) = the -{AWAY} market's yes_bid/ask. Prices
+  are in the `_dollars`/`_fp` fields (old yes_bid/volume are None).
+- **Liquidity**: far-future games thin/wide (2-24c); NEAR-TERM/live games are TIGHT
+  (~1c spreads, 12k-154k volume) — comparable to PM. So live cross-venue gaps are
+  cleanly capturable.
+- **`mlb_xvenue.py` BUILT** (Kalshi half tested locally; mapping perfect). Polls PM
+  bbo + Kalshi KXMLBGAME per live game, logs both venues' bid/ask + gap_mid + the
+  two executable arbs (arb_buyPM_sellK = k_bid-pm_ask; arb_buyK_sellPM = pm_bid-
+  k_ask; >0 after fees = locked edge). Run on the DROPLET during live games:
+    cd /home/deploy/polymarket-discord-bot && git pull origin hardening
+    nohup venv/bin/python mlb_xvenue.py 300 20 > mlb_xvenue.log 2>&1 &
+    # then: cp mlb_xvenue.jsonl /root/  and download
+  NEXT after data: analyze the gap distribution vs round-trip cost on BOTH legs
+  (PM ~0.5c + Kalshi ~1c + fees). Edge = gap frequently exceeds total cost. Need
+  to confirm Kalshi's fee schedule (maker/taker) for the cost model. Also the
+  gap's SIGN persistence (does one venue systematically lead?) informs execution.
+
 ## FIRST MESSAGE FOR THE NEW WINDOW (paste this)
 "Continue the Sniperbot project. Tennis is ruled out (see HANDOFF.md + FINDINGS.md
 in C:\Users\a00579503\Documents\Sniperbot). Now evaluate MLB on Polymarket US.
