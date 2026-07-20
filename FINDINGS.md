@@ -107,6 +107,29 @@ innings tie).
   more data (if it's persistent + calibrated + > cost it'd be a static-mispricing
   edge, distinct from a lag -- but 2pts is below cost, so: watch, don't chase).
 
+## MLB: RULED OUT — final verdict (2026-07-19)
+Full-slate data (15 distinct games, full pre-game->in-play arcs; 15,839 ticks; 27
+clean outcomes). BOTH edge hypotheses fail decisively. Screen 1 (liquidity) PASSED
+— deep, tight books — but the market is EFFICIENT both in-play and pre-game.
+- **(A) IN-PLAY WP-lag = NO edge.** 298 WP-jump events, 46 FRESH divergences
+  (|PM-WP|>=6pts after a run/big-out). PM does NOT close them: median gap_closed
+  = -0.04, converge_rate 46% (bar: +0.40 and 60%). PM tracks the win-prob and does
+  not lag it. Same signature as tennis. `analyze_mlb_lag.py`.
+- **(B) PRE-GAME order-flow / "smart money" = NO edge.** Big money DOES flow in
+  pre-game (OI grows 40-450% per game) but the price does NOT move: of 24 OI-jump
+  events (>=10% or >=5k sh), only 3 (12%) moved price >=0.5c, and continuation was
+  1 vs 21 flat. Pre-game drift predicted the winner 4/7 (57%, coin flip). The deep
+  two-sided book absorbs size at fair value -> no line movement to follow.
+  `analyze_mlb_orderflow.py`.
+=> CONCLUSION: Polymarket US MLB is EFFICIENT (pre-game AND in-play) on DEEP books
+that absorb size without moving. No retail directional edge for our tools, from a
+free model reference OR order flow. Reached for ~$0 (StatsAPI free + read-only PM).
+Same lesson as tennis, now on a major/liquid market: **liquid PM US sports
+moneylines are well-arbitraged.** Pattern across both candidates (niche+thin AND
+major+deep) => LOW prior for any free-data directional edge in PM US sports
+moneylines. The clean pipeline (discovery/bbo price/StatsAPI WP+outcomes/analyzers)
+is reusable. Data-quality all validated (price_side=away confirmed by 27 outcomes).
+
 ## ROOT CAUSE FOUND — our market price + outcome data is corrupted
 Investigated the downloaded log (8139 recs, 71 matches) directly. Findings:
 - **market_p2 ~= market_p1 (mean |diff| 0.07), NOT complementary.** The two

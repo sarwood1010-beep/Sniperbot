@@ -4,9 +4,13 @@ You are picking up a Polymarket US sports-trading research project. Goal: find a
 REAL, defined edge and grow principal slowly. **Paper only — never enable live
 trading. Never commit secrets.** Full history in `FINDINGS.md`.
 
-## STATUS: Tennis RULED OUT. MLB Screen 1 (liquidity) PASSED. Next = Screen 2 (lag).
-## MLB in-play books are deep+tight (unlike tennis). Now measure if PM price LAGS
-## the free StatsAPI win-prob (edge) or tracks it (efficient). Build mlb_collect.py.
+## STATUS: Tennis RULED OUT. MLB RULED OUT (2026-07-19). Decision point: where next?
+## MLB: Screen 1 (liquidity) PASSED (deep books) but BOTH edge hypotheses FAILED on a
+## full slate — (A) in-play PM does NOT lag the win-prob (efficient, like tennis);
+## (B) pre-game big money doesn't move the price (no order-flow edge). See FINDINGS
+## "MLB: RULED OUT". Two candidates (niche+thin, major+deep) both efficient => LOW
+## prior for a free-data directional edge in PM US sports moneylines. Open options in
+## the "WHERE NEXT" section below; recommend NOT spending on the $99 sharp feed yet.
 Tennis (in-play, Polymarket US) has no retail edge for our tools — the market is
 efficient (it beats our win-prob model and does NOT lag it) and the books are
 thin. Proven directly from data, ~$0 trading loss. See FINDINGS.md "TENNIS: RULED
@@ -138,14 +142,31 @@ Do NOT build heavy or spend money before the two cheap screens pass:
     nohup venv/bin/python mlb_collect.py 480 20 > mlb_collect.log 2>&1 &
   Collect a few such nights -> re-run analyze_mlb_lag.py -> read vs the Screen-2 bar.
   (Analyzer auto-drops doubleheaders + dedups restart re-emissions.)
-- SECOND HYPOTHESIS (free, same data): `mlb_collect.py` now ALSO polls PRE-GAME
-  markets (game_state="pregame") and logs OI/price + flags >=10% openInterest jumps
-  live. Tests "smart-money" order-flow: does a big pre-game OI jump precede PM price
-  CONTINUATION (edge) or is it efficient? In-play proxy on the first file showed
-  post-volume-spike REVERSION not continuation (5 cont / 16 rev, tiny n) — pregame
-  (info-driven) is the real untested case. TODO: `analyze_mlb_orderflow.py` (detect
-  OI-jump events by game_state, measure forward price drift; optionally corroborate
-  with a free odds-feed line move to separate "smart" from "big-but-dumb").
+- SECOND HYPOTHESIS (free, same data) — TESTED, NO edge. `mlb_collect.py` also polls
+  PRE-GAME markets; `analyze_mlb_orderflow.py` ran on the full slate: big pre-game
+  money (OI +40-450%/game) does NOT move the price (3/24 jumps moved it >=0.5c; no
+  continuation); pre-game drift predicted winners 57% (n=7). Deep book absorbs size
+  at fair value. NO order-flow edge. Details in FINDINGS "MLB: RULED OUT (B)".
+
+## WHERE NEXT (decision point — both sport candidates efficient)
+Tennis (niche/thin) AND MLB (major/deep) are both EFFICIENT on PM US -> strong
+evidence liquid PM US sports moneylines are well-arbitraged. Honest options:
+1. **STOP the sports-moneyline hunt (recommended default).** Two disciplined
+   negatives for ~$0. The prior for a free-data directional edge here is now LOW.
+   Reusable assets remain (hardened bot, core.py, full MLB pipeline + analyzers).
+2. **$99 sharp feed (The Odds API / Pinnacle) — LOWER priority now.** The in-play
+   efficiency result implies PM ~= sharp consensus already (the deep book is likely
+   set by people watching Pinnacle), so PM lagging Pinnacle by a tradeable margin is
+   unlikely. Only worth it as a cheap 1-month kill-test if strongly motivated.
+3. **Different market TYPE, not moneylines.** Less-efficient corners (player props,
+   less-liquid same-day markets, other event contracts) — but those reintroduce the
+   tennis thin-book problem (can't trade size) and often are still efficient/messy.
+4. **Different edge MECHANISM.** Not directional: market-making the spread (pro game
+   at 0.5c spreads), or cross-venue arb PM US vs Kalshi vs books (latency/infra
+   game). Both are a different project than "find a lagging price."
+Recommendation: call MLB done; decide 1 vs a scoped test of 3/4 with the user. Do
+NOT reflexively collect more nights — the signals aren't borderline (converge 46%
+vs 60% bar; OI jumps move price 12%), more data won't flip them.
 
 ## FIRST MESSAGE FOR THE NEW WINDOW (paste this)
 "Continue the Sniperbot project. Tennis is ruled out (see HANDOFF.md + FINDINGS.md
