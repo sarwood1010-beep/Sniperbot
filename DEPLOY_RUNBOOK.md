@@ -25,12 +25,16 @@ and the new edge-measurement is **read-only**.
 
 ## Deploy the MLB x-venue PAPER arb model (Discord-alerting, like sniper-bot)
 `mlb_arb_paper.py` is READ-ONLY (simulated fills, NO real orders) — safe to run as
-a service. It alerts to Discord via a **webhook** (no bot token needed).
-1. Create a Discord webhook: channel → Edit → Integrations → Webhooks → New →
-   copy URL. Add to the droplet `.env` (same file sniper-bot uses):
-     `echo 'DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/XXX/YYY' >> \
-        /home/deploy/polymarket-discord-bot/.env`
-   (If you skip the webhook it just logs locally — still fully functional.)
+a service. It posts to Discord and by default **REUSES the sniper-bot's existing
+`DISCORD_TOKEN` + `ALERTS_CHANNEL_ID`** already in `.env` (REST posting; works even
+while sniper-bot is stopped). So NO webhook and no new setup is needed.
+1. Discord: nothing to do — it auto-uses `DISCORD_TOKEN` + `ALERTS_CHANNEL_ID`.
+   - To post to a DIFFERENT channel, set `MLB_ARB_CHANNEL_ID=<id>` in `.env`.
+   - To use a standalone webhook instead, set `DISCORD_WEBHOOK_URL=<real url>`.
+   - If none resolve, it just logs locally (still fully functional).
+   - (Remove any bogus placeholder line, e.g. `DISCORD_WEBHOOK_URL=<paste-real-url>`:
+     `sed -i '/DISCORD_WEBHOOK_URL/d' /home/deploy/polymarket-discord-bot/.env`)
+   The startup log line prints `discord=bot->chan <id>` / `webhook` / `off`.
 2. Install + start the service:
      `sudo cp /home/deploy/polymarket-discord-bot/mlb-arb-paper.service /etc/systemd/system/`
      `sudo systemctl daemon-reload`

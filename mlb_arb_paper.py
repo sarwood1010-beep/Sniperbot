@@ -37,7 +37,11 @@ except Exception as e:
 load_dotenv(override=True)
 OUTFILE = "mlb_arb_paper.jsonl"
 KB = "https://api.elections.kalshi.com/trade-api/v2"
+# Discord: prefer a standalone webhook, else REUSE the sniper-bot's existing token +
+# channel from .env (REST posting works even while sniper-bot is stopped).
 WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+DISC_TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
+DISC_CHAN = (os.environ.get("MLB_ARB_CHANNEL_ID") or os.environ.get("ALERTS_CHANNEL_ID", "")).strip()
 PM_FEE = 0.0   # unknown; 0 = best case (loudly flagged in the summary)
 
 def now_utc(): return datetime.now(timezone.utc)
@@ -76,15 +80,33 @@ def http(url, tmo=15):
     try: return json.load(urllib.request.urlopen(req, timeout=tmo))
     except Exception as e: return {"_err": str(e)[:120]}
 
+def _webhook_ok(u):
+    return u.startswith("https://") and "XXX" not in u and "paste" not in u.lower()
+
 def discord(msg):
-    if not WEBHOOK: return
-    try:
-        data = json.dumps({"content": msg[:1900]}).encode()
-        req = urllib.request.Request(WEBHOOK, data=data, method="POST",
-              headers={"Content-Type": "application/json", "User-Agent": "mlb-arb-paper"})
-        urllib.request.urlopen(req, timeout=10)
-    except Exception as e:
-        log("discord err:", str(e)[:100])
+    data = json.dumps({"content": msg[:1900]}).encode()
+    # 1) real standalone webhook, if configured (and not the placeholder)
+    if _webhook_ok(WEBHOOK):
+        try:
+            req = urllib.request.Request(WEBHOOK, data=data, method="POST",
+                  headers={"Content-Type": "application/json", "User-Agent": "mlb-arb-paper"})
+            urllib.request.urlopen(req, timeout=10); return
+        except Exception as e:
+            log("discord webhook err:", str(e)[:100])
+    # 2) reuse the sniper-bot token + channel from .env (REST; no gateway needed)
+    if DISC_TOKEN and DISC_CHAN:
+        try:
+            req = urllib.request.Request(f"https://discord.com/api/v10/channels/{DISC_CHAN}/messages",
+                  data=data, method="POST", headers={"Content-Type": "application/json",
+                  "Authorization": f"Bot {DISC_TOKEN}", "User-Agent": "mlb-arb-paper"})
+            urllib.request.urlopen(req, timeout=10); return
+        except Exception as e:
+            log("discord bot-api err:", str(e)[:100])
+
+def discord_mode():
+    if _webhook_ok(WEBHOOK): return "webhook"
+    if DISC_TOKEN and DISC_CHAN: return f"bot->chan {DISC_CHAN}"
+    return "off (local log only)"
 
 def et_date(): return (now_utc() - timedelta(hours=4)).strftime("%Y-%m-%d")
 def live_games():
@@ -140,7 +162,7 @@ def main():
     latency = float(sys.argv[3]) if len(sys.argv) > 3 else 4.0
     entry = (float(sys.argv[4]) if len(sys.argv) > 4 else 2.0) / 100.0
     log(f"PAPER x-venue arb model | run {run_min}m poll {interval}s latency {latency}s "
-        f"entry {entry*100:.1f}c | webhook={'ON' if WEBHOOK else 'off'} | READ-ONLY, NO ORDERS")
+        f"entry {entry*100:.1f}c | discord={discord_mode()} | READ-ONLY, NO ORDERS")
     if not (key_id and secret):
         log("!! no PM creds -- run on the droplet."); return
     discord(f":satellite: **MLB x-venue PAPER arb model started** (poll {interval}s, "
