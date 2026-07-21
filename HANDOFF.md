@@ -82,6 +82,10 @@ Do NOT build heavy or spend money before the two cheap screens pass:
   python.exe"` (3.11, stdlib). Use for py_compile + running unittest/analysis.
 - **`git push` is broken from the Bash tool — use the PowerShell tool for git.**
   (Its output wraps git stderr as a red "error"; exit 0 + a `->` ref line = ok.)
+- **`sniper-bot` systemd service is STOPPED + DISABLED (2026-07-20, tennis retired).**
+  It was pinging Polymarket's atp/wta search (HTTP 429) + the RapidAPI tennis feed.
+  Do NOT restart it — current work is standalone `mlb_*.py`, not the bot. It's the
+  paper harness kept for reuse; revive via `sudo systemctl enable --now sniper-bot`.
 - Deploy = user pulls `hardening` on the droplet + restarts (DEPLOY_RUNBOOK.md).
   `.env` via systemd EnvironmentFile; `load_dotenv(override=True)`; feed HTTP
   needs a `User-Agent` header.

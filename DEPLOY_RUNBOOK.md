@@ -1,5 +1,17 @@
 # Deploy Runbook — first deploy of the `hardening` work
 
+> **>>> STATUS 2026-07-20: `sniper-bot` is INTENTIONALLY STOPPED + DISABLED. <<<**
+> Tennis is RULED OUT, so the bot's tennis loops were deliberately parked — it was
+> pinging Polymarket's atp/wta discovery search on a timer (seen hitting HTTP 429)
+> AND the RapidAPI tennis feed. Parked with:
+> `sudo systemctl stop sniper-bot && sudo systemctl disable sniper-bot`.
+> Do NOT restart it expecting useful work — the current effort (MLB, then
+> cross-venue PM-vs-Kalshi) runs as standalone `mlb_*.py` scripts, NOT the bot.
+> It's only the paper-trading harness, kept for possible later reuse; revive with
+> `sudo systemctl enable --now sniper-bot` if a future strategy needs it. (The
+> RapidAPI tennis subscription should also be cancelled on RapidAPI's site — that
+> is separate from stopping the pings.)
+
 Plain-English, copy-paste steps to deploy tonight. Do them **together** so we can
 watch the logs. Nothing here places a real trade — the bot starts in **paper**,
 and the new edge-measurement is **read-only**.
