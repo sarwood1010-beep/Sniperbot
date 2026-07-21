@@ -39,3 +39,5 @@ venv/
 # removed; pytest is scoped to tests/ via pyproject.toml.
 mlb_xvenue.jsonl
 mlb_xvenue.log
+mlb_arb_paper.jsonl
+mlb_arb_paper.log

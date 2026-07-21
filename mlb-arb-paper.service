@@ -1,0 +1,23 @@
+[Unit]
+# MLB cross-venue PAPER arb model -- READ-ONLY, places NO real orders on any venue.
+# Deploys exactly like sniper-bot. Safe: every fill is simulated.
+Description=MLB x-venue PAPER arb model (Polymarket vs Kalshi, read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Match sniper-bot's user (it ran as root on this droplet). Change if yours differs.
+User=root
+WorkingDirectory=/home/deploy/polymarket-discord-bot
+# Reuses the same secrets file as sniper-bot; add DISCORD_WEBHOOK_URL=... to it.
+EnvironmentFile=/home/deploy/polymarket-discord-bot/.env
+# args: run_min(0=forever) interval_s latency_s entry_cents
+ExecStart=/home/deploy/polymarket-discord-bot/venv/bin/python /home/deploy/polymarket-discord-bot/mlb_arb_paper.py 0 3 4 2
+Restart=on-failure
+RestartSec=15
+StandardOutput=append:/home/deploy/polymarket-discord-bot/mlb_arb_paper.log
+StandardError=append:/home/deploy/polymarket-discord-bot/mlb_arb_paper.log
+
+[Install]
+WantedBy=multi-user.target

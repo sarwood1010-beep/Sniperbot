@@ -23,6 +23,27 @@ and the new edge-measurement is **read-only**.
   feed, compares the model to Polymarket's price, logs the result). Measurement is
   gated on `RAPIDAPI_KEY` and never trades.
 
+## Deploy the MLB x-venue PAPER arb model (Discord-alerting, like sniper-bot)
+`mlb_arb_paper.py` is READ-ONLY (simulated fills, NO real orders) — safe to run as
+a service. It alerts to Discord via a **webhook** (no bot token needed).
+1. Create a Discord webhook: channel → Edit → Integrations → Webhooks → New →
+   copy URL. Add to the droplet `.env` (same file sniper-bot uses):
+     `echo 'DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/XXX/YYY' >> \
+        /home/deploy/polymarket-discord-bot/.env`
+   (If you skip the webhook it just logs locally — still fully functional.)
+2. Install + start the service:
+     `sudo cp /home/deploy/polymarket-discord-bot/mlb-arb-paper.service /etc/systemd/system/`
+     `sudo systemctl daemon-reload`
+     `sudo systemctl enable --now mlb-arb-paper`
+     `journalctl -u mlb-arb-paper -f`   # watch it; or tail mlb_arb_paper.log
+3. It idles when no games are live and detects during games. Args in the unit:
+   `run_min(0=forever) interval_s latency_s entry_cents` (default `0 3 4 2`).
+   Data -> `mlb_arb_paper.jsonl`; download to analyze capture-rate + paper P&L.
+4. Stop/remove: `sudo systemctl disable --now mlb-arb-paper`.
+NOTE: this is the PAPER pressure-test of the one real edge found (FINDINGS
+"CROSS-VENUE"). It NEVER places real orders. Going live would be a separate,
+explicit, user-driven decision — not this service.
+
 ## Strategy: deploy the BRANCH, keep `main` as the rollback
 We put the new code on the droplet by switching it to the `hardening` branch.
 `main` (your current known-good code) stays untouched, so rolling back is one
