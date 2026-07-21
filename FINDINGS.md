@@ -107,6 +107,33 @@ innings tie).
   more data (if it's persistent + calibrated + > cost it'd be a static-mispricing
   edge, distinct from a lag -- but 2pts is below cost, so: watch, don't chase).
 
+## CROSS-VENUE (PM vs Kalshi): a REAL arb EXISTS but is SPEED-GATED (2026-07-21)
+First genuine edge signal in the project. `mlb_xvenue.py` collected PM+Kalshi
+quotes on the SAME MLB game-winner binary (25k rows, 6.3k in-play). `analyze_mlb_
+xvenue.py`:
+- **Pre-game: efficient.** Venues agree to ~0.25c; NET arb after fees = 0.00%.
+- **In-play: real dislocations.** |gap| p99=8.5c, max=31.5c. A NET-positive
+  EXECUTABLE arb (after Kalshi fee) occurs ~**4% of live moments**, and SURVIVES a
+  strict liquidity filter: with BOTH venues at <=1c spread, 32 arbs of 4.5-8.5c net
+  (e.g. Miami PM 12% vs Kalshi 23.5% -> +8.5c). NOT stale-quote artifacts.
+- **It's a TRUE arb, not a directional bet** (so the ~50/50 lead direction is
+  irrelevant): buy the cheap venue + sell the dear venue on the same outcome ->
+  both settle to the same $0/$1 -> locked gap regardless of winner. Verified
+  (long MIA@PM 0.125 + long NO-MIA@Kalshi 0.77 = pay 0.895, always get $1 = +10.5c).
+- **THE BINDING CONSTRAINT = execution speed.** Gaps persist median 1 poll (~20s),
+  p90 2, MAX 3 (~60s). At 20s polling + manual fills we can't reliably fill BOTH
+  legs before the gap closes. This is a latency/execution problem, not an
+  "edge exists?" problem -- the edge is real and repeatable.
+- OPEN before it's tradeable: (1) TRUE gap lifetime (need faster polling, ~2-3s);
+  (2) resting SIZE at the arb price (only have top-of-book); (3) leg risk (one fills,
+  gap closes -> naked); (4) capital efficiency (lock ~$0.90/contract for hours per
+  ~5-10c); (5) PM fee (assumed 0 = best case) + Kalshi order API + PM order API.
+=> STATUS: NOT ruled out -- the ONLY live edge found. Next (still PAPER/read-only):
+build a FAST cross-venue monitor (poll both every ~2-3s) to measure true gap
+lifetime + simulate latency-realistic paper fills -> is enough capturable after leg
+risk to justify an execution build? Guardrail: real 2-venue execution touches the
+"never enable live trading" rule -> paper-prove first, stage funding later.
+
 ## MLB: RULED OUT — final verdict (2026-07-19)
 Full-slate data (15 distinct games, full pre-game->in-play arcs; 15,839 ticks; 27
 clean outcomes). BOTH edge hypotheses fail decisively. Screen 1 (liquidity) PASSED
