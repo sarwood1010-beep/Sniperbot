@@ -107,7 +107,41 @@ innings tie).
   more data (if it's persistent + calibrated + > cost it'd be a static-mispricing
   edge, distinct from a lag -- but 2pts is below cost, so: watch, don't chase).
 
-## CROSS-VENUE (PM vs Kalshi): a REAL arb EXISTS but is SPEED-GATED (2026-07-21)
+## CROSS-VENUE: **RULED OUT — the "arb" was a POLLING TIME-SKEW ARTIFACT** (2026-08-02)
+**This CORRECTS the 07-21 entry below, which called it a real edge. It is not.**
+12 days of the paper model (3,170 detects / 2,029 fills / 1,134 misses, 64% capture,
++6.47c mean, $131 "profit" per contract, ZERO losing trades) looked spectacular —
+which was itself the tell: a repeatable 6.5c arb across two liquid regulated
+exchanges, hundreds of times a day for 12 days, would be industrial-scale free money.
+Diagnosis (all checks in `analyze_mlb_xvenue.py`, velocity control now built in):
+- Kalshi data is NOT stale/wrong: bulk `/markets` quotes MATCH the authoritative
+  `/orderbook`; Kalshi reprices in-play as much as PM (0.665c vs 0.655c per tick,
+  same ranges, millions of contracts of in-play volume). Both venues are live+active.
+- Ticker mapping is correct (no date/matchup/side collisions; 99.1% of rows are
+  closer as same-side than complement).
+- **THE CAUSE — the two venues are sampled at slightly DIFFERENT INSTANTS.** The
+  Kalshi index is fetched once per loop and reused while each game's PM quote is
+  fetched fresh. When the price is repricing fast (right after a run), that time
+  skew alone manufactures a phantom gap. Proof — NET>0 "arb" rate by how fast the
+  price was moving:
+      quiet (<0.5c/tick): **0.13%**   |  0.5-2c: 1.42%
+      2-5c:               14.57%      |  >5c:   **41.61%**
+  A **320x** difference driven purely by market velocity. 79% of all detected arbs
+  occurred during fast repricing. At QUIET moments — the only condition where a gap
+  would be stable enough to actually trade — the venues agree to ~0.4c and a
+  net-positive arb essentially never appears (0.13%, indistinguishable from noise).
+- The paper model inherited the same skew in its fill re-check, so phantom gaps
+  "survived" the latency window -> the fake 64% capture and zero losses.
+=> **NO cross-venue edge.** PM and Kalshi are efficient with respect to each other.
+Any future two-venue test MUST quote both venues within the same instant (parallel
+fetch, timestamp each leg, and DISCARD samples taken during fast repricing) and be
+judged ONLY on quiet-moment gaps. LESSON (same family as the tennis
+corrupted-price and the WP-latency traps): when two data sources are compared, an
+apparent edge is a measurement-timing bug until proven otherwise; the giveaway is
+an implausibly good, loss-free result. ACTION: stop `mlb-arb-paper` (it emits false
+signals).
+
+## [SUPERSEDED — see the correction above] CROSS-VENUE: a REAL arb EXISTS but is SPEED-GATED (2026-07-21)
 First genuine edge signal in the project. `mlb_xvenue.py` collected PM+Kalshi
 quotes on the SAME MLB game-winner binary (25k rows, 6.3k in-play). `analyze_mlb_
 xvenue.py`:

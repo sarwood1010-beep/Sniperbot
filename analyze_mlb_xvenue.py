@@ -98,9 +98,38 @@ def main():
               f"median {sorted(runs)[len(runs)//2]} polls (~{sorted(runs)[len(runs)//2]*20}s), max {max(runs)} polls")
     else:
         print("\nNO positive-NET-arb streaks at all -- venues never cross after fees.")
-    print("\nVERDICT guide: EDGE if NET>0 happens often AND persists >= a few polls "
-          "(time to fill both legs). If NET>0 is ~0% / one-tick blips -> efficient "
-          "cross-venue -> NO-GO (idea #1 dead); pivot to #3 behavioral.")
+    # ---- THE CONTROL THAT MATTERS: velocity ---------------------------------
+    # The two venues are polled at slightly DIFFERENT instants. When the price is
+    # repricing fast, that time skew alone manufactures a phantom "gap" that is
+    # NOT tradeable. Any apparent arb must therefore be judged at QUIET moments.
+    print("\n=== VELOCITY CONTROL (phantom-arb test) ===")
+    byslug = defaultdict(list)
+    for r in rows: byslug[r["slug"]].append(r)
+    buckets = [(0, 0.005), (0.005, 0.02), (0.02, 0.05), (0.05, 9)]
+    stats = {b: [0, 0, 0.0] for b in buckets}   # n, n_arb, sum|gap|
+    for s, rs in byslug.items():
+        rs.sort(key=lambda r: r["poll_ts"])
+        for i in range(1, len(rs)):
+            r, p = rs[i], rs[i-1]
+            pm, k = mid(r["pm_bid"], r["pm_ask"]), mid(r["k_bid"], r["k_ask"])
+            pm0, k0 = mid(p["pm_bid"], p["pm_ask"]), mid(p["k_bid"], p["k_ask"])
+            vel = max(abs(pm-pm0), abs(k-k0))
+            net = max(r["k_bid"]-r["pm_ask"], r["pm_bid"]-r["k_ask"]) - kalshi_fee(k) - PM_FEE
+            for b in buckets:
+                if b[0] <= vel < b[1]:
+                    stats[b][0] += 1; stats[b][1] += (net > 0); stats[b][2] += abs(pm-k); break
+    print(f"  {'move since last tick':>22} {'n':>6} {'mean|gap|':>10} {'NET>0 rate':>11}")
+    for b in buckets:
+        n, na, sg = stats[b]
+        if not n: continue
+        lbl = f"{b[0]*100:.1f}-{b[1]*100:.0f}c" if b[1] < 9 else f">{b[0]*100:.0f}c"
+        print(f"  {lbl:>22} {n:>6} {sg/n*100:>9.2f}c {100*na/n:>10.2f}%")
+    print("  If NET>0 rate is ~0 at QUIET moments but high at FAST moments, the 'arb'")
+    print("  is a POLLING TIME-SKEW ARTIFACT (two venues sampled at different instants),")
+    print("  NOT a real cross-venue disagreement. Only the quiet-moment rate is real.")
+
+    print("\nVERDICT guide: EDGE only if NET>0 is common AT QUIET MOMENTS and persists "
+          ">= a few polls. High NET>0 confined to fast-repricing moments = phantom.")
 
 if __name__ == "__main__":
     main()

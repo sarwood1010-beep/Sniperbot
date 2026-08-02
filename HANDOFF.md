@@ -4,7 +4,14 @@ You are picking up a Polymarket US sports-trading research project. Goal: find a
 REAL, defined edge and grow principal slowly. **Paper only — never enable live
 trading. Never commit secrets.** Full history in `FINDINGS.md`.
 
-## STATUS: Tennis RULED OUT. MLB RULED OUT (2026-07-19). Decision point: where next?
+## STATUS (2026-08-02): Tennis OUT. MLB OUT. CROSS-VENUE (PM vs Kalshi) OUT — the
+## apparent arb was a POLLING TIME-SKEW ARTIFACT (venues sampled at different
+## instants; NET>0 rate 0.13% at quiet moments vs 41.6% during fast repricing =
+## 320x). See FINDINGS "CROSS-VENUE: RULED OUT". **ACTION: stop `mlb-arb-paper`**
+## (`sudo systemctl disable --now mlb-arb-paper`) — it emits false signals.
+## Remaining untested ideas: #3 behavioral bias (needs NO speed — best next), #2
+## internal no-arb violations, #4 settlement/weather, #5 market-making.
+## Old decision point below.
 ## MLB: Screen 1 (liquidity) PASSED (deep books) but BOTH edge hypotheses FAILED on a
 ## full slate — (A) in-play PM does NOT lag the win-prob (efficient, like tennis);
 ## (B) pre-game big money doesn't move the price (no order-flow edge). See FINDINGS
