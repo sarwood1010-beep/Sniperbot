@@ -41,3 +41,5 @@ mlb_xvenue.jsonl
 mlb_xvenue.log
 mlb_arb_paper.jsonl
 mlb_arb_paper.log
+mlb_bias_data.jsonl
+mlb_bias_fetch.log
